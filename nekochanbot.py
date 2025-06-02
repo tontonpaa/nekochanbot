@@ -215,7 +215,7 @@ async def _create_status_vc_for_original(original_vc: discord.VoiceChannel) -> d
         logger.info(f"作成成功: Status VC「{new_status_vc.name}」(ID: {new_status_vc.id}) (Original VC: {original_vc.name})")
         return new_status_vc
     except discord.Forbidden:
-         logger.error(f"Status VCの作成に失敗 (権限不足) ({original_vc.name}, Guild: {guild.name})")
+        logger.error(f"Status VCの作成に失敗 (権限不足) ({original_vc.name}, Guild: {guild.name})")
     except Exception as e:
         logger.error(f"Status VCの作成に失敗 ({original_vc.name}): {e}", exc_info=True)
     return None
@@ -291,11 +291,11 @@ async def unregister_vc_tracking_internal(original_channel_id: int, guild: disco
                 except Exception as e:
                     logger.error(f"Status VC {status_vc.name} (ID: {status_vc.id}) の削除中にエラー: {e}", exc_info=True)
             elif status_vc : # チャンネルは存在するがVCではない場合
-                 logger.warning(f"Status Channel ID {status_channel_id} はVCではありませんでした。削除はスキップ。")
+                logger.warning(f"Status Channel ID {status_channel_id} はVCではありませんでした。削除はスキップ。")
             else:
                 logger.info(f"DBに記録のあったStatus VC {status_channel_id} がGuild {current_guild.name} に見つかりませんでした。")
         elif status_channel_id:
-             logger.warning(f"GuildオブジェクトなしでStatus VC {status_channel_id} の削除はスキップされました (Original VC ID: {original_channel_id})。")
+            logger.warning(f"GuildオブジェクトなしでStatus VC {status_channel_id} の削除はスキップされました (Original VC ID: {original_channel_id})。")
 
     if original_channel_id in channel_last_successful_update_at: 
         del channel_last_successful_update_at[original_channel_id]
@@ -386,6 +386,15 @@ async def on_ready():
     logger.info(f'ログイン成功: {bot.user.name} (ID: {bot.user.id})')
     logger.info(f"discord.py バージョン: {discord.__version__}")
     
+    # --- ここにアクティビティ設定コードを追加 ---
+    try:
+        activity = discord.CustomActivity(name="にゃんだふるなVCサポートをお届けするニャ！")
+        await bot.change_presence(activity=activity)
+        logger.info("ボットのアクティビティを設定しました。")
+    except Exception as e:
+        logger.error(f"アクティビティの設定中にエラー: {e}")
+    # ------------------------------------
+    
     if await init_firestore():
         await load_tracked_channels_from_db()
     else:
@@ -424,11 +433,11 @@ async def on_ready():
                 await update_dynamic_status_channel_name(original_vc, status_vc)
             else: # ステータスVCが無効または存在しない場合、再作成
                 if status_vc: 
-                     logger.warning(f"起動時: Status VC {status_vc.id} ({original_vc.name}用) が無効か移動されました。削除して再作成を試みます。")
-                     try:
-                         await status_vc.delete(reason="無効なステータスVCのため再作成")
-                     except Exception as e:
-                         logger.error(f"無効なステータスVC {status_vc.id} の削除エラー: {e}")
+                    logger.warning(f"起動時: Status VC {status_vc.id} ({original_vc.name}用) が無効か移動されました。削除して再作成を試みます。")
+                    try:
+                        await status_vc.delete(reason="無効なステータスVCのため再作成")
+                    except Exception as e:
+                        logger.error(f"無効なステータスVC {status_vc.id} の削除エラー: {e}")
                 
                 logger.info(f"起動時: {original_vc.name} のステータスVCが存在しないか無効です。新規作成を試みます。")
                 new_status_vc_obj = await _create_status_vc_for_original(original_vc) 
@@ -542,23 +551,12 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
                 original_vc = channel.guild.get_channel(original_channel_id_to_process)
                 if original_vc and isinstance(original_vc, discord.VoiceChannel):
                     logger.info(f"Original VC {original_vc.name} はまだ存在します。ステータスVCの再作成を試みます。")
-                    # 古い追跡情報をDBとメモリから削除（unregister_internalは呼ばない）
+                    # 古い追跡情報をDBとメモリから削除
                     await remove_tracked_original_from_db(original_channel_id_to_process)
                     if original_channel_id_to_process in vc_tracking:
                         del vc_tracking[original_channel_id_to_process]
-                    # 再登録処理（新しいステータスVCが作られる）
-                    # register_new_vc_for_tracking は内部でロックを取るので、ここではロックを解放してから呼ぶか、
-                    # ロックなし版の登録関数を別途用意する必要がある。
-                    # ここでは、ロックを解放せずに register_new_vc_for_tracking を呼ぶとデッドロックの可能性があるため、
-                    # 一旦 unregister してから register を呼ぶ形にするか、
-                    # _create_status_vc_for_original とDB保存を直接行う。
-                    # 今回は、unregister_vc_tracking_internal を呼んでから、register_new_vc_for_tracking を呼ぶ形にする。
-                    # ただし、register_new_vc_for_trackingが再度ロックを取ろうとするので、この構造は良くない。
-                    # ---- 修正案 ----
-                    # ステータスVC削除時は、まずメモリとDBから該当エントリを削除し、
-                    # その後、ロックの外で register_new_vc_for_tracking を呼ぶか、
-                    # もしくは、このロック内で _create_status_vc_for_original とDB保存まで行う。
-                    # ここでは後者を採用する。
+                    
+                    # このロック内で新しいステータスVCを作成して登録する
                     logger.info(f"Original VC {original_vc.name} のための新しいステータスVCを作成します。")
                     new_status_vc = await _create_status_vc_for_original(original_vc)
                     if new_status_vc:
@@ -628,8 +626,8 @@ async def periodic_status_update():
                 await unregister_vc_tracking_internal(original_vc.id, guild, is_internal_call=True)
             await register_new_vc_for_tracking(original_vc)
         elif original_cid in vc_tracking: # その他のケースでまだ追跡情報が残っている場合
-             logger.warning(f"定期更新: Original VC {original_cid} の状態が無効です。追跡解除します。")
-             await unregister_vc_tracking(original_cid, guild)
+            logger.warning(f"定期更新: Original VC {original_cid} の状態が無効です。追跡解除します。")
+            await unregister_vc_tracking(original_cid, guild)
 
 
 # --- Bot Commands ---
@@ -718,7 +716,7 @@ async def nah_vc_command(ctx, *, channel_id_or_name: str):
             # send_feedback_to_ctx でメッセージが送られているはずなので、ここでは成功時のみ
             await ctx.send(f"VC「{target_vc.name}」の人数表示用チャンネルを作成し、追跡を開始するニャ！🐈")
         elif not lock.locked(): # ロックされておらず、かつ失敗した場合（作成失敗など）
-             await ctx.send(f"VC「{target_vc.name}」の追跡設定に失敗したニャ😿")
+            await ctx.send(f"VC「{target_vc.name}」の追跡設定に失敗したニャ😿")
             
 @nah_vc_command.error
 async def nah_vc_command_error(ctx, error):
@@ -744,9 +742,9 @@ if __name__ == "__main__":
     else:
         try:
             logger.info("Botを起動します...")
+            keep_alive() # Webサーバーを起動してBotをオンラインに保つ
             bot.run(DISCORD_TOKEN)
         except discord.LoginFailure:
             logger.critical("Discordへのログインに失敗しました。トークンが正しいか確認してください。")
         except Exception as e:
             logger.critical(f"Botの起動中に予期せぬエラーが発生しました: {e}", exc_info=True)
-
