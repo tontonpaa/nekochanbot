@@ -15,6 +15,6 @@ RUN pip install --upgrade pip && \
 # .dockerignoreファイルを使用して、不要なファイル（例: .git, .venvなど）を除外することを推奨します。
 COPY . .
 
-# ボットのメインファイルが "main.py" であることを想定しています。
+# ボットのメインファイルが "nekochanbot.py" であることを想定しています。
 # ファイル名が異なる場合は、適宜修正してください。
-CMD ["python3", "main.py"]
+CMD ["python3", "nekochanbot.py"]
