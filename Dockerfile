@@ -17,4 +17,4 @@ COPY . .
 
 # ボットのメインファイルが "nekochanbot.py" であることを想定しています。
 # ファイル名が異なる場合は、適宜修正してください。
-CMD ["python3", "nekochanbot.py"]
+CMD ["python3", "nekochanbot2.py"]
