@@ -885,6 +885,7 @@ async def nah_help_prefix(ctx: commands.Context):
 
 # --- Main Bot Execution ---
 async def start_bot_main():
+    print_info("!!!!!!!!!! CODE VERSION V12 (NO LOCKS - FINAL CHECK) IS DEFINITELY RUNNING !!!!!!!!!!")
     if DISCORD_TOKEN is None:
         print_error("DISCORD_TOKEN が環境変数に設定されていません。Botを起動できません。")
         return
