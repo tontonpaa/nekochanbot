@@ -19,25 +19,41 @@ _log_level_map_print = {
 }
 _CURRENT_LOG_LEVEL_PRINT_NUM = _log_level_map_print.get(LOG_LEVEL_PRINT_ENV, 10) # Default to DEBUG numeric
 
+# Forward declaration for _get_timestamp_for_print, datetime will be imported later
+_datetime_module = None 
+_timezone_module = None
+
+def _ensure_datetime_imported():
+    global _datetime_module, _timezone_module
+    if _datetime_module is None:
+        from datetime import datetime as dt_actual, timezone as tz_actual # Import here
+        _datetime_module = dt_actual
+        _timezone_module = tz_actual
+
 def _get_timestamp_for_print():
-    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3] + "Z" # UTC timestamp
+    _ensure_datetime_imported()
+    # Ensure datetime and timezone are imported before calling this
+    if _datetime_module is None or _timezone_module is None: # Should not happen if _ensure_datetime_imported is called
+        return "TIMESTAMP_ERROR"
+    return _datetime_module.now(_timezone_module.utc).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3] + "Z" # UTC timestamp
 
 def print_log_custom(level_str, message, *args, exc_info_data=None):
     level_num = _log_level_map_print.get(level_str.upper(), 0)
 
     if level_num >= _CURRENT_LOG_LEVEL_PRINT_NUM:
-        # Basic context: function name and line number can be tricky and slow with print.
-        # For now, just timestamp, level, and message.
-        # More advanced context would require inspect module and impact performance.
-        
-        # Get current task name if available
         task_name_part = ""
         try:
-            current_task = asyncio.current_task()
-            if current_task:
-                task_name_part = f"Task-{current_task.get_name()}|"
-        except RuntimeError: # No current task or event loop not running
+            # Forward declaration for asyncio, will be imported later
+            _asyncio_module_for_log = sys.modules.get('asyncio')
+            if _asyncio_module_for_log:
+                current_task = _asyncio_module_for_log.current_task()
+                if current_task:
+                    task_name_part = f"Task-{current_task.get_name()}|"
+        except RuntimeError: 
             pass
+        except AttributeError: 
+            pass
+
 
         formatted_message = f"{_get_timestamp_for_print()} {level_str:<8s} {task_name_part}- {message}"
         
@@ -50,24 +66,20 @@ def print_log_custom(level_str, message, *args, exc_info_data=None):
             
             print(full_message, file=output_stream, flush=True)
 
-            if exc_info_data: # If an exception object or traceback string is passed
+            if exc_info_data: 
                 if isinstance(exc_info_data, Exception):
-                    # Print basic exception info
                     print(f"{_get_timestamp_for_print()} ERROR    - Exception: {type(exc_info_data).__name__}: {exc_info_data}", file=sys.stderr, flush=True)
-                    # Attempt to print traceback if sys.exc_info() is relevant (i.e., called from except block)
                     exc_type, exc_value, tb = sys.exc_info()
-                    if exc_type is not None: # An exception is active
+                    if exc_type is not None: 
                          traceback_str = "".join(traceback.format_exception(exc_type, exc_value, tb))
                          print(f"{_get_timestamp_for_print()} ERROR    - Traceback:\n{traceback_str}", file=sys.stderr, flush=True)
-                elif isinstance(exc_info_data, str): # Assume it's a pre-formatted traceback string
+                elif isinstance(exc_info_data, str): 
                     print(f"{_get_timestamp_for_print()} ERROR    - Traceback:\n{exc_info_data}", file=sys.stderr, flush=True)
-
         except Exception as e_print:
-            # Fallback if formatting/printing fails
             print(f"{_get_timestamp_for_print()} PRINT_ERROR - Failed to format/print log: {e_print} | Original Level: {level_str} | Original Message: {message}", file=sys.stderr, flush=True)
 
 def print_debug(message, *args):
-    if DEBUG_PRINT_ENABLED: # Only print if DEBUG_PRINT_ENABLED is true
+    if DEBUG_PRINT_ENABLED: 
         print_log_custom("DEBUG", message, *args)
 
 def print_info(message, *args):
@@ -77,18 +89,17 @@ def print_warning(message, *args):
     print_log_custom("WARNING", message, *args)
 
 def print_error(message, *args, exc_info=False):
-    """
-    Prints an error message. If exc_info is True and called within an exception handler,
-    it will attempt to print traceback information.
-    """
     if exc_info:
         exc_type, exc_value, tb = sys.exc_info()
         if exc_type is not None:
             tb_str = "".join(traceback.format_exception(exc_type, exc_value, tb))
-            print_log_custom("ERROR", message + "\n" + tb_str, *args) # Pass args to message part
+            print_log_custom("ERROR", message + "\n" + tb_str, *args) 
             return 
     print_log_custom("ERROR", message, *args)
 
+# --- Import datetime and timezone here for global use by _get_timestamp_for_print ---
+from datetime import datetime, timedelta, timezone 
+_ensure_datetime_imported() # Ensure modules are loaded for the first log calls
 
 # Initial test prints
 print_info("カスタムprintロギングシステム初期化。LOG_LEVEL_PRINT: %s, DEBUG_PRINT_ENABLED: %s", LOG_LEVEL_PRINT_ENV, DEBUG_PRINT_ENABLED)
@@ -102,11 +113,8 @@ load_dotenv()
 import discord
 from discord.ext import commands, tasks
 import re 
-# os and sys already imported
-from google.cloud import firestore
-from google.auth.exceptions import DefaultCredentialsError
-from datetime import datetime, timedelta, timezone # datetime, timedelta, timezone already imported
-import asyncio
+# os, sys, datetime, timedelta, timezone, traceback already imported
+import asyncio 
 
 from flask import Flask
 from threading import Thread
@@ -124,22 +132,16 @@ def home():
 def run_flask():
     port = int(os.environ.get('PORT', 8080)) 
     print_info(f"Flaskサーバーを host=0.0.0.0, port={port} で起動します。")
-    # Flask's internal logging (Werkzeug) can be noisy.
-    # It uses the standard logging module. If we've cleared handlers, it might not output.
-    # To control it if it does output:
+    # To control Werkzeug logging if it uses standard logging:
     # import logging
     # logging.getLogger('werkzeug').setLevel(logging.WARNING)
-    app.run(host='0.0.0.0', port=port, debug=False) # Flask debug mode should be False in prod
+    app.run(host='0.0.0.0', port=port, debug=False) 
 
 def keep_alive():
     flask_thread = Thread(target=run_flask, name="FlaskKeepAliveThread")
     flask_thread.daemon = True 
     flask_thread.start()
     print_info("Keep-aliveスレッドを開始しました。")
-
-# --- Discord.py logging - No longer explicitly configured as we use custom prints ---
-# print_info("Discord.pyのロギングレベル設定はスキップされます (カスタムprintを使用)。")
-
 
 # --- Bot Intents Configuration ---
 intents = discord.Intents.default() 
@@ -157,13 +159,11 @@ vc_tracking = {}
 vc_locks = {}    
 
 # --- Cooldown and State Settings for VC Name Updates ---
-BOT_UPDATE_WINDOW_DURATION = timedelta(minutes=5)  
-MAX_UPDATES_IN_WINDOW = 2                       
-API_CALL_TIMEOUT = 20.0 # Increased timeout
-DB_CALL_TIMEOUT = 15.0  # Increased timeout
-LOCK_ACQUIRE_TIMEOUT = 15.0 # Increased timeout
+API_CALL_TIMEOUT = 20.0 
+DB_CALL_TIMEOUT = 15.0  
+LOCK_ACQUIRE_TIMEOUT = 15.0 
+ZERO_USER_TIMEOUT_DURATION = timedelta(minutes=5) # Specific timeout for 0-user rule
 
-vc_rate_limit_windows = {}  
 vc_zero_stats = {}          
 vc_discord_api_cooldown_until = {} 
 
@@ -204,6 +204,11 @@ async def init_firestore():
     global db
     try:
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            # Import firestore here to ensure it's only imported if credentials are set
+            from google.cloud import firestore as google_firestore
+            global firestore # Make firestore globally available if imported
+            firestore = google_firestore
+
             db = firestore.AsyncClient()
             await asyncio.wait_for(db.collection(FIRESTORE_COLLECTION_NAME).limit(1).get(), timeout=DB_CALL_TIMEOUT)
             print_info("Firestoreクライアントの初期化に成功しました。")
@@ -218,6 +223,10 @@ async def init_firestore():
         return False
     except asyncio.TimeoutError:
         print_error("Firestoreクライアントの初期化テスト中にタイムアウトしました。")
+        db = None
+        return False
+    except ImportError:
+        print_error("Google Cloud Firestoreライブラリが見つかりません。 `pip install google-cloud-firestore` を実行してください。")
         db = None
         return False
     except Exception as e:
@@ -268,13 +277,18 @@ async def load_tracked_channels_from_db():
 async def save_tracked_original_to_db(original_channel_id: int, guild_id: int, status_channel_id: int, original_channel_name: str):
     if not db: return
     try:
+        # Ensure firestore module is available (might not be if init_firestore failed before import)
+        if 'firestore' not in globals() or globals()['firestore'] is None:
+            print_error("Firestoreモジュールが利用可能でないため、DBへの保存をスキップします。")
+            return
+
         doc_ref = db.collection(FIRESTORE_COLLECTION_NAME).document(str(original_channel_id))
         await asyncio.wait_for(
             doc_ref.set({
                 "guild_id": guild_id, 
                 "status_channel_id": status_channel_id,
                 "original_channel_name": original_channel_name,
-                "updated_at": firestore.SERVER_TIMESTAMP 
+                "updated_at": firestore.SERVER_TIMESTAMP # Use the globally available firestore
             }),
             timeout=DB_CALL_TIMEOUT
         )
@@ -396,7 +410,6 @@ async def register_new_vc_for_tracking(original_vc: discord.VoiceChannel, send_f
             }
             await save_tracked_original_to_db(original_vc_id, original_vc.guild.id, new_status_vc.id, original_vc.name)
             
-            vc_rate_limit_windows.pop(original_vc_id, None)
             vc_zero_stats.pop(original_vc_id, None)
             vc_discord_api_cooldown_until.pop(original_vc_id, None)
 
@@ -479,7 +492,6 @@ async def unregister_vc_tracking_internal(original_channel_id: int, guild: disco
         elif not current_guild and status_channel_id:
              print_warning(f"[{task_name}|unregister_internal] Guild for original_channel_id {original_channel_id} not found. Cannot delete status VC {status_channel_id}.")
     
-    vc_rate_limit_windows.pop(original_channel_id, None)
     vc_zero_stats.pop(original_channel_id, None)
     vc_discord_api_cooldown_until.pop(original_channel_id, None)
     
@@ -547,7 +559,7 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
             if ovc_id not in vc_zero_stats:
                 vc_zero_stats[ovc_id] = {"zero_since": now, "notified_zero_explicitly": False}
             zero_stat = vc_zero_stats[ovc_id]
-            if now >= zero_stat["zero_since"] + BOT_UPDATE_WINDOW_DURATION and not zero_stat.get("notified_zero_explicitly", False):
+            if now >= zero_stat["zero_since"] + ZERO_USER_TIMEOUT_DURATION and not zero_stat.get("notified_zero_explicitly", False): # Corrected constant
                 desired_name_str = f"{base_name}：0 users"
                 is_special_zero_update_condition = True
         else:
@@ -575,17 +587,8 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
                  vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
             return 
 
-        window_info = vc_rate_limit_windows.get(ovc_id)
-        can_update_by_bot_rule = False
-        if not window_info or now >= window_info["window_start_time"] + BOT_UPDATE_WINDOW_DURATION:
-            can_update_by_bot_rule = True
-        elif window_info["count"] < MAX_UPDATES_IN_WINDOW:
-            can_update_by_bot_rule = True
+        # Custom rate limit (5 min / 2 updates) is REMOVED.
         
-        if not can_update_by_bot_rule: 
-            print_debug(f"[{task_name}|update_dynamic] Bot rate limit for {original_vc.name}. Updates in window: {window_info['count'] if window_info else 'N/A'}. Skip.")
-            return 
-
         print_info(f"[{task_name}|update_dynamic] Attempting name change for {status_vc.name} ('{current_status_vc_name}') to '{final_new_name}'")
         try:
             await asyncio.wait_for(
@@ -593,11 +596,7 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
                 timeout=API_CALL_TIMEOUT
             )
             print_info(f"[{task_name}|update_dynamic] SUCCESS name change for {status_vc.name} to '{final_new_name}'")
-            current_window_data = vc_rate_limit_windows.get(ovc_id)
-            if not current_window_data or now >= current_window_data["window_start_time"] + BOT_UPDATE_WINDOW_DURATION:
-                vc_rate_limit_windows[ovc_id] = {"window_start_time": now, "count": 1}
-            else:
-                current_window_data["count"] += 1
+            
             if is_special_zero_update_condition and ovc_id in vc_zero_stats:
                 vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
             if ovc_id in vc_discord_api_cooldown_until: del vc_discord_api_cooldown_until[ovc_id]
@@ -608,7 +607,7 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
             if e_http.status == 429:
                 retry_after = e_http.retry_after if e_http.retry_after is not None else 60.0
                 vc_discord_api_cooldown_until[ovc_id] = now + timedelta(seconds=retry_after)
-                print_warning(f"[{task_name}|update_dynamic] Discord API rate limit (429) for {status_vc.name}. Cooldown: {retry_after}s")
+                print_warning(f"[{task_name}|update_dynamic] Discord API rate limit (429) for {status_vc.name}. Cooldown: {retry_after}s. Update skipped this cycle.")
             else:
                 print_error(f"[{task_name}|update_dynamic] HTTP error {e_http.status} editing {status_vc.name}: {e_http.text}", exc_info=True)
         except Exception as e_edit: 
@@ -649,8 +648,6 @@ async def on_ready():
     
     for original_cid in tracked_ids_to_process:
         print_info(f"[on_ready] Processing VC ID: {original_cid}")
-        # Schedule each VC's on_ready processing as a separate task
-        # This allows on_ready to complete faster and not be blocked by a single problematic VC.
         async def process_vc_on_ready_task(cid):
             task_name_on_ready = asyncio.current_task().get_name() if asyncio.current_task() else f"OnReadyTask-{cid}"
             lock_on_ready = get_vc_lock(cid)
@@ -665,7 +662,7 @@ async def on_ready():
                     print_info(f"[{task_name_on_ready}] VC {cid} no longer in tracking. Skipping.")
                     return
 
-                track_info_on_ready = vc_tracking[cid] # Safe to access after check
+                track_info_on_ready = vc_tracking[cid] 
                 guild_on_ready = bot.get_guild(track_info_on_ready["guild_id"])
 
                 if not guild_on_ready:
@@ -682,12 +679,11 @@ async def on_ready():
                 status_vc_id_on_ready = track_info_on_ready.get("status_channel_id")
                 status_vc_on_ready = guild_on_ready.get_channel(status_vc_id_on_ready) if status_vc_id_on_ready else None
                 
-                vc_rate_limit_windows.pop(cid, None)
-                vc_zero_stats.pop(cid, None)
+                vc_zero_stats.pop(cid, None) # Reset zero stats on ready
 
                 if isinstance(status_vc_on_ready, discord.VoiceChannel) and status_vc_on_ready.category and STATUS_CATEGORY_NAME.lower() in status_vc_on_ready.category.name.lower():
                     print_info(f"[{task_name_on_ready}] Original VC {original_vc_on_ready.name} existing Status VC {status_vc_on_ready.name} is valid. Updating name.")
-                    await update_dynamic_status_channel_name(original_vc_on_ready, status_vc_on_ready) # This will schedule another task for update
+                    await update_dynamic_status_channel_name(original_vc_on_ready, status_vc_on_ready) 
                 else:
                     if status_vc_on_ready:
                         print_warning(f"[{task_name_on_ready}] Status VC {status_vc_on_ready.id if status_vc_on_ready else 'N/A'} for {original_vc_on_ready.name} invalid/moved. Deleting and recreating.")
@@ -697,7 +693,7 @@ async def on_ready():
                             print_error(f"[{task_name_on_ready}] Error deleting invalid status VC {status_vc_on_ready.id if status_vc_on_ready else 'N/A'}: {e_del_on_ready}", exc_info=True)
                     
                     print_info(f"[{task_name_on_ready}] Status VC for {original_vc_on_ready.name} missing or invalid. Recreating.")
-                    await unregister_vc_tracking_internal(cid, guild_on_ready, is_internal_call=True) # Clean up first
+                    await unregister_vc_tracking_internal(cid, guild_on_ready, is_internal_call=True) 
                     
                     new_status_vc_obj_on_ready = await _create_status_vc_for_original(original_vc_on_ready)
                     if new_status_vc_obj_on_ready:
@@ -724,12 +720,8 @@ async def on_ready():
         asyncio.create_task(process_vc_on_ready_task(original_cid), name=f"OnReadyTask-VC-{original_cid}")
             
     print_info("起動時の追跡VC状態整合性チェックのタスク投入が完了しました。")
-    # Start periodic task after a short delay to allow on_ready tasks to potentially grab locks first
-    # or after bot is fully ready. Here, we start it after scheduling the on_ready VC processing.
     if not periodic_status_update.is_running():
         try:
-            # Consider a delay before first run if on_ready is heavy:
-            # await asyncio.sleep(30) # Example: wait 30s before first periodic run
             periodic_status_update.start()
             print_info("定期ステータス更新タスクを開始しました。")
         except RuntimeError as e_task_start: 
@@ -1032,8 +1024,14 @@ async def start_bot_main():
         print("CRITICAL: Logger is None in start_bot_main. Attempting re-setup.", file=sys.stderr)
         logger = setup_logging() 
         if not logger:
-            print("CRITICAL: Fallback logger also failed in start_bot_main. Exiting.", file=sys.stderr)
-            return 
+            print("CRITICAL: Fallback logger also failed in start_bot_main. Exiting or proceeding without reliable logging.", file=sys.stderr)
+            # For this critical failure, we will attempt to use print directly for critical messages.
+            def print_critical_fallback(message, *args, exc_info=None): # Simple fallback
+                 print(f"{_get_timestamp_for_print()} CRITICAL - {message}" % args, file=sys.stderr, flush=True)
+                 if exc_info: print(traceback.format_exc(), file=sys.stderr, flush=True)
+            global print_info, print_debug, print_warning, print_error # Re-assign to fallback
+            print_info = print_debug = print_warning = print_error = print_critical_fallback
+
 
     if DISCORD_TOKEN is None:
         print_error("DISCORD_TOKEN が環境変数に設定されていません。Botを起動できません。")
