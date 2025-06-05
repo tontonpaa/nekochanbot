@@ -1,3 +1,2 @@
 .env
-app/vc_data.json
-nekochanbot.py
+etc/secrets/vc_data.json
