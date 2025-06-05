@@ -1,22 +1,33 @@
 # Ensure sys is imported early for print diagnostics if logging fails
-import logging
 import sys
-import os # os is needed for getenv for RENDER check and DISCORD_TOKEN
+import os # os is needed for getenv
 
 # --- VERY EARLY LOGGING CONFIGURATION ---
-# This function should be called BEFORE most other imports, especially discord.py
 def setup_logging():
     """
     Configures logging to ensure DEBUG messages are captured, especially for Render.
+    Reads LOG_LEVEL from environment variable.
     Returns a logger instance for the application to use.
     """
-    # Use print for initial diagnostics as logging might not be set up yet.
     print("[SETUP_LOGGING_DIAG] Attempting to configure logging...", file=sys.stdout)
     
     try:
-        import logging # Import logging module HERE, at the very beginning of the function
+        import logging # Import logging module HERE
+
+        # --- Read log level from environment variable ---
+        default_log_level_str = "DEBUG" 
+        log_level_env_str = os.getenv("LOG_LEVEL", default_log_level_str).upper()
         
-        log_format = "%(asctime)s %(levelname)-8s %(name)-20s %(module)s:%(lineno)d - %(message)s"
+        log_level_numeric = getattr(logging, log_level_env_str, None)
+        if not isinstance(log_level_numeric, int):
+            print(f"[SETUP_LOGGING_WARNING] Invalid LOG_LEVEL '{log_level_env_str}' from environment. Defaulting to {default_log_level_str}.", file=sys.stderr)
+            log_level_numeric = logging.DEBUG # Fallback to DEBUG
+            log_level_str_for_print = default_log_level_str
+        else:
+            log_level_str_for_print = log_level_env_str
+            print(f"[SETUP_LOGGING_DIAG] LOG_LEVEL from environment: {log_level_str_for_print} (Numeric: {log_level_numeric})", file=sys.stdout)
+
+        log_format = "%(asctime)s %(levelname)-8s %(name)-22s %(module)s:%(lineno)d - %(message)s" # Wider name field
         date_format = '%Y-%m-%d %H:%M:%S'
         
         root_logger = logging.getLogger() 
@@ -25,22 +36,20 @@ def setup_logging():
             print(f"[SETUP_LOGGING_DIAG] Root logger has {len(root_logger.handlers)} existing handlers. Clearing them.", file=sys.stdout)
             for handler in list(root_logger.handlers): 
                 try:
-                    # Do not close stdout/stderr if a handler is using them directly.
-                    # Render might redirect stdout/stderr, so closing them could be problematic.
-                    # if handler.stream not in (sys.stdout, sys.stderr):
-                    #    handler.close() # This line might be problematic on Render if it closes stdout.
                     root_logger.removeHandler(handler)
+                    # Avoid closing stdout/stderr directly if a handler was using it.
+                    # handler.close() # Generally safe, but can be tricky with platform loggers
                     print(f"[SETUP_LOGGING_DIAG] Removed handler: {handler}", file=sys.stdout)
                 except Exception as e_handler_remove:
                     print(f"[SETUP_LOGGING_DIAG] Error removing handler {handler}: {e_handler_remove}", file=sys.stderr)
         else:
             print("[SETUP_LOGGING_DIAG] Root logger has no existing handlers.", file=sys.stdout)
 
-        root_logger.setLevel(logging.DEBUG) # Set root logger level
+        root_logger.setLevel(log_level_numeric) # Set root logger level from env or default
         print(f"[SETUP_LOGGING_DIAG] Root logger level set to: {logging.getLevelName(root_logger.level)} ({root_logger.level})", file=sys.stdout)
 
         console_handler = logging.StreamHandler(sys.stdout) 
-        console_handler.setLevel(logging.DEBUG) 
+        console_handler.setLevel(log_level_numeric) # Handler must also be at the desired level or lower
         
         formatter = logging.Formatter(log_format, datefmt=date_format)
         console_handler.setFormatter(formatter)
@@ -49,33 +58,36 @@ def setup_logging():
         print(f"[SETUP_LOGGING_DIAG] Added new StreamHandler to root logger. Handler level: {logging.getLevelName(console_handler.level)}", file=sys.stdout)
 
         app_logger = logging.getLogger(__name__) 
-        app_logger.setLevel(logging.DEBUG) # Explicitly set for app_logger too
+        # app_logger level will be effectively controlled by the root_logger's level and its own (if set lower).
+        # No need to set app_logger.setLevel(log_level_numeric) here if we want it to simply inherit.
         
-        app_logger.info(
-            "Application logger ('%s') initialized. Effective level: %s. Root level: %s. Handler level: %s",
+        app_logger.info( # This should always appear if INFO >= configured log_level_numeric
+            "Application logger ('%s') initialized. Configured LOG_LEVEL: %s. Effective level for this logger: %s.",
             app_logger.name,
-            logging.getLevelName(app_logger.getEffectiveLevel()),
-            logging.getLevelName(root_logger.level),
-            logging.getLevelName(console_handler.level)
+            log_level_str_for_print, # Display the level name string used
+            logging.getLevelName(app_logger.getEffectiveLevel())
         )
-        app_logger.debug("これはアプリケーションロガーからのテストDEBUGメッセージです。これが表示されればDEBUG設定は有効です。")
+        # Test DEBUG message
+        app_logger.debug("これはアプリケーションロガーからのテストDEBUGメッセージです。LOG_LEVELがDEBUGの場合に表示されます。")
         
-        if not app_logger.isEnabledFor(logging.DEBUG):
-            print(f"[SETUP_LOGGING_WARNING] Application logger '{app_logger.name}' is NOT enabled for DEBUG level despite setup attempts! Effective level: {app_logger.getEffectiveLevel()}", file=sys.stderr)
-        
+        if not app_logger.isEnabledFor(logging.DEBUG) and log_level_numeric <= logging.DEBUG:
+             print(f"[SETUP_LOGGING_WARNING] Application logger '{app_logger.name}' is NOT enabled for DEBUG, but configured level was DEBUG or lower! Effective level: {logging.getLevelName(app_logger.getEffectiveLevel())}", file=sys.stderr)
+        elif app_logger.isEnabledFor(logging.DEBUG):
+             print(f"[SETUP_LOGGING_DIAG] Application logger '{app_logger.name}' IS enabled for DEBUG.", file=sys.stdout)
+
+
         print("[SETUP_LOGGING_DIAG] Logging setup function complete.", file=sys.stdout)
         return app_logger
 
     except Exception as e_logging_setup:
         print(f"[SETUP_LOGGING_CRITICAL_ERROR] ロギング設定中に重大なエラーが発生しました: {e_logging_setup}", file=sys.stderr)
         try:
-            # Fallback logger setup if main setup fails
-            import logging as fallback_logging_module # Use a different alias to avoid name collision if outer import logging fails
+            import logging as fallback_logging_module 
             fb_logger = fallback_logging_module.getLogger("fallback_logger")
             fb_handler = fallback_logging_module.StreamHandler(sys.stderr)
             fb_formatter = fallback_logging_module.Formatter('%(asctime)s %(levelname)s (FALLBACK): %(message)s')
             fb_handler.setFormatter(fb_formatter)
-            if not fb_logger.handlers: # Add handler only if not already added (e.g. in recursive call)
+            if not fb_logger.handlers: 
                 fb_logger.addHandler(fb_handler)
             fb_logger.setLevel(fallback_logging_module.INFO)
             fb_logger.error(f"Fallback logger activated due to setup error: {e_logging_setup}")
@@ -84,16 +96,15 @@ def setup_logging():
             print(f"[SETUP_LOGGING_CRITICAL_ERROR] Fallback logger setup also failed: {e_fallback_setup}", file=sys.stderr)
             return None
 
-logger = setup_logging() # Call the logging setup function immediately.
+logger = setup_logging() 
 if logger is None:
     print("CRITICAL: Logging could not be initialized AT ALL. Subsequent log messages will be lost.", file=sys.stderr)
 # --- END OF VERY EARLY LOGGING CONFIGURATION ---
 
 
 from dotenv import load_dotenv
-load_dotenv() # Load environment variables from .env file AFTER initial logging setup if it relies on env vars
+load_dotenv() 
 
-# Now import other modules
 import discord
 from discord.ext import commands, tasks
 import re 
@@ -104,6 +115,8 @@ import asyncio
 
 from flask import Flask
 from threading import Thread
+
+if logger: logger.info(f"dotenv loaded. RENDER env var: {os.getenv('RENDER')}")
 
 
 # --- Flask App for Keep Alive (Render health checks) ---
@@ -117,10 +130,10 @@ def run_flask():
     port = int(os.environ.get('PORT', 8080)) 
     if logger: logger.info(f"Flaskサーバーを host=0.0.0.0, port={port} で起動します。")
     
-    werkzeug_logger = logging.getLogger('werkzeug') # Get Werkzeug logger
-    if werkzeug_logger: werkzeug_logger.setLevel(logging.WARNING) # Suppress INFO logs from Werkzeug
+    werkzeug_logger = logging.getLogger('werkzeug')
+    if werkzeug_logger: werkzeug_logger.setLevel(logging.WARNING) 
 
-    app.run(host='0.0.0.0', port=port, debug=False) # Ensure Flask debug mode is False for production
+    app.run(host='0.0.0.0', port=port, debug=False) 
 
 def keep_alive():
     flask_thread = Thread(target=run_flask, name="FlaskKeepAliveThread")
@@ -130,13 +143,15 @@ def keep_alive():
 
 # --- Discord.py logging (optional, control after our setup) ---
 if logger: logger.info("Setting discord.py log levels...")
+# Set levels for discord.py's own loggers
+# These will also be affected by the root logger's level if it's higher (more restrictive)
 logging.getLogger('discord').setLevel(logging.INFO) 
 logging.getLogger('discord.http').setLevel(logging.WARNING) 
 logging.getLogger('discord.gateway').setLevel(logging.INFO) 
 if logger: logger.info("Discord.py log levels set.")
 
 
-# ...(rest of the bot code, V5/V6 logic, remains the same from here)...
+# ...(rest of the bot code from V6, including Firestore, VC logic, commands, etc. remains the same)...
 # --- Bot Intents Configuration ---
 intents = discord.Intents.default() 
 intents.guilds = True
@@ -442,7 +457,6 @@ async def unregister_vc_tracking(original_channel_id: int, guild: discord.Guild 
             if logger: logger.debug(f"[{task_name}|unregister_vc] Lock for VC ID: {original_channel_id} released in finally.")
 
 async def unregister_vc_tracking_internal(original_channel_id: int, guild: discord.Guild | None, send_feedback_to_ctx=None, is_internal_call: bool = False):
-    # Assumes lock is ALREADY ACQUIRED by the caller.
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "UnregInternalTask"
     if logger: logger.info(f"[{task_name}|unregister_internal] VC ID {original_channel_id} の追跡解除処理を開始 (内部呼び出し: {is_internal_call})。")
     track_info = vc_tracking.pop(original_channel_id, None)
@@ -1012,51 +1026,40 @@ async def nah_help_prefix(ctx: commands.Context):
 
 # --- Main Bot Execution ---
 async def start_bot_main():
-    # Global logger is already initialized by setup_logging() at the top
+    global logger # Ensure we are using the global logger potentially re-assigned in setup_logging
     if not logger:
-        # This case should ideally not be reached if setup_logging worked or provided a fallback.
-        # If it is reached, it means even fallback logging failed.
-        print("CRITICAL: Logger is None in start_bot_main. Logging will not work.", file=sys.stderr)
-        # Attempt one last time to get a basic logger if possible, or just proceed.
-        global logger # Make sure we're trying to modify the global
-        logger = logging.getLogger("emergency_logger")
-        if not logger.hasHandlers(): # Avoid adding handlers repeatedly if somehow called multiple times
-            emergency_handler = logging.StreamHandler(sys.stderr)
-            emergency_formatter = logging.Formatter('%(asctime)s %(levelname)s (EMERGENCY): %(message)s')
-            emergency_handler.setFormatter(emergency_formatter)
-            logger.addHandler(emergency_handler)
-            logger.setLevel(logging.INFO)
-        logger.error("Emergency logger activated in start_bot_main.")
-
+        print("CRITICAL: Logger is None in start_bot_main. Attempting re-setup.", file=sys.stderr)
+        logger = setup_logging() # Try to set it up again if it was None
+        if not logger:
+            print("CRITICAL: Fallback logger also failed in start_bot_main. Exiting.", file=sys.stderr)
+            return 
 
     if DISCORD_TOKEN is None:
-        if logger: logger.critical("DISCORD_TOKEN が環境変数に設定されていません。Botを起動できません。")
-        else: print("CRITICAL: DISCORD_TOKEN not set.", file=sys.stderr)
+        logger.critical("DISCORD_TOKEN が環境変数に設定されていません。Botを起動できません。")
         return
     
     if os.getenv("RENDER"): 
         keep_alive()
 
     try:
-        if logger: logger.info("Botの非同期処理を開始します...")
+        logger.info("Botの非同期処理を開始します...")
         await bot.start(DISCORD_TOKEN)
     except discord.LoginFailure:
-        if logger: logger.critical("Discordへのログインに失敗しました。トークンが正しいか確認してください。")
+        logger.critical("Discordへのログインに失敗しました。トークンが正しいか確認してください。")
     except Exception as e:
-        if logger: logger.critical(f"Botの起動中または実行中に予期せぬエラーが発生しました: {e}", exc_info=True)
+        logger.critical(f"Botの起動中または実行中に予期せぬエラーが発生しました: {e}", exc_info=True)
     finally:
         if bot.is_connected() and not bot.is_closed(): 
-            if logger: logger.info("Botをシャットダウンします...")
+            logger.info("Botをシャットダウンします...")
             try:
                 await bot.close()
             except Exception as e_close:
-                if logger: logger.error(f"Botのシャットダウン中にエラー: {e_close}", exc_info=True)
-        if logger: logger.info("Botがシャットダウンしました。")
+                logger.error(f"Botのシャットダウン中にエラー: {e_close}", exc_info=True)
+        logger.info("Botがシャットダウンしました。")
 
 # --- Entry Point ---
 if __name__ == "__main__":
-    # logger should be initialized by setup_logging() at the top of the script
-    if not logger: # Final check
+    if not logger: 
         print("FATAL: Logger was not set up correctly before __main__. Exiting.", file=sys.stderr)
         sys.exit("Logger setup failed")
 
@@ -1068,3 +1071,4 @@ if __name__ == "__main__":
     except Exception as e: 
         if logger: logger.critical(f"メインの実行ループで予期せぬエラーが発生しました: {e}", exc_info=True)
         else: print(f"メインの実行ループで予期せぬエラーが発生しました: {e}", file=sys.stderr)
+
