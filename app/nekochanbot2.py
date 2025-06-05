@@ -19,7 +19,6 @@ _log_level_map_print = {
 }
 _CURRENT_LOG_LEVEL_PRINT_NUM = _log_level_map_print.get(LOG_LEVEL_PRINT_ENV, 10) # Default to DEBUG numeric
 
-# Forward declaration for _get_timestamp_for_print, datetime will be imported later
 _datetime_module = None 
 _timezone_module = None
 
@@ -32,10 +31,9 @@ def _ensure_datetime_imported():
 
 def _get_timestamp_for_print():
     _ensure_datetime_imported()
-    # Ensure datetime and timezone are imported before calling this
-    if _datetime_module is None or _timezone_module is None: # Should not happen if _ensure_datetime_imported is called
+    if _datetime_module is None or _timezone_module is None: 
         return "TIMESTAMP_ERROR"
-    return _datetime_module.now(_timezone_module.utc).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3] + "Z" # UTC timestamp
+    return _datetime_module.now(_timezone_module.utc).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3] + "Z"
 
 def print_log_custom(level_str, message, *args, exc_info_data=None):
     level_num = _log_level_map_print.get(level_str.upper(), 0)
@@ -43,7 +41,6 @@ def print_log_custom(level_str, message, *args, exc_info_data=None):
     if level_num >= _CURRENT_LOG_LEVEL_PRINT_NUM:
         task_name_part = ""
         try:
-            # Forward declaration for asyncio, will be imported later
             _asyncio_module_for_log = sys.modules.get('asyncio')
             if _asyncio_module_for_log:
                 current_task = _asyncio_module_for_log.current_task()
@@ -54,18 +51,13 @@ def print_log_custom(level_str, message, *args, exc_info_data=None):
         except AttributeError: 
             pass
 
-
         formatted_message = f"{_get_timestamp_for_print()} {level_str:<8s} {task_name_part}- {message}"
-        
         output_stream = sys.stderr if level_str in ["ERROR", "CRITICAL"] else sys.stdout
-
         try:
             full_message = formatted_message
             if args:
                 full_message = formatted_message % args
-            
             print(full_message, file=output_stream, flush=True)
-
             if exc_info_data: 
                 if isinstance(exc_info_data, Exception):
                     print(f"{_get_timestamp_for_print()} ERROR    - Exception: {type(exc_info_data).__name__}: {exc_info_data}", file=sys.stderr, flush=True)
@@ -97,15 +89,12 @@ def print_error(message, *args, exc_info=False):
             return 
     print_log_custom("ERROR", message, *args)
 
-# --- Import datetime and timezone here for global use by _get_timestamp_for_print ---
 from datetime import datetime, timedelta, timezone 
-_ensure_datetime_imported() # Ensure modules are loaded for the first log calls
+_ensure_datetime_imported() 
 
-# Initial test prints
 print_info("カスタムprintロギングシステム初期化。LOG_LEVEL_PRINT: %s, DEBUG_PRINT_ENABLED: %s", LOG_LEVEL_PRINT_ENV, DEBUG_PRINT_ENABLED)
 print_debug("これはカスタムprintデバッグメッセージです。表示されればDEBUG出力は有効です。")
 # --- End of Custom Print Logging Configuration ---
-
 
 from dotenv import load_dotenv
 load_dotenv() 
@@ -113,14 +102,12 @@ load_dotenv()
 import discord
 from discord.ext import commands, tasks
 import re 
-# os, sys, datetime, timedelta, timezone, traceback already imported
 import asyncio 
 
 from flask import Flask
 from threading import Thread
 
 print_info(f"dotenvロード完了。RENDER env var: {os.getenv('RENDER')}")
-
 
 # --- Flask App for Keep Alive (Render health checks) ---
 app = Flask('')
@@ -132,9 +119,6 @@ def home():
 def run_flask():
     port = int(os.environ.get('PORT', 8080)) 
     print_info(f"Flaskサーバーを host=0.0.0.0, port={port} で起動します。")
-    # To control Werkzeug logging if it uses standard logging:
-    # import logging
-    # logging.getLogger('werkzeug').setLevel(logging.WARNING)
     app.run(host='0.0.0.0', port=port, debug=False) 
 
 def keep_alive():
@@ -154,15 +138,15 @@ db = None
 FIRESTORE_COLLECTION_NAME = "discord_tracked_original_vcs_prod_v4" 
 STATUS_CATEGORY_NAME = "STATUS" 
 
-# --- VC Tracking Dictionaries and Locks ---
+# --- VC Tracking Dictionaries ---
 vc_tracking = {} 
-vc_locks = {}    
+# vc_locks = {} # REMOVED
 
 # --- Cooldown and State Settings for VC Name Updates ---
 API_CALL_TIMEOUT = 20.0 
 DB_CALL_TIMEOUT = 15.0  
-LOCK_ACQUIRE_TIMEOUT = 15.0 
-ZERO_USER_TIMEOUT_DURATION = timedelta(minutes=5) # Specific timeout for 0-user rule
+# LOCK_ACQUIRE_TIMEOUT = 15.0 # REMOVED
+ZERO_USER_TIMEOUT_DURATION = timedelta(minutes=5) 
 
 vc_zero_stats = {}          
 vc_discord_api_cooldown_until = {} 
@@ -201,13 +185,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
 # --- Firestore Helper Functions ---
 async def init_firestore():
-    global db
+    global db, firestore # Ensure firestore is global if used for SERVER_TIMESTAMP
     try:
         if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            # Import firestore here to ensure it's only imported if credentials are set
-            from google.cloud import firestore as google_firestore
-            global firestore # Make firestore globally available if imported
-            firestore = google_firestore
+            from google.cloud import firestore as google_firestore # Import here
+            firestore = google_firestore # Make it globally available for SERVER_TIMESTAMP
 
             db = firestore.AsyncClient()
             await asyncio.wait_for(db.collection(FIRESTORE_COLLECTION_NAME).limit(1).get(), timeout=DB_CALL_TIMEOUT)
@@ -238,7 +220,6 @@ async def load_tracked_channels_from_db():
     if not db:
         print_info("Firestoreが無効なため、データベースからの読み込みをスキップします。")
         return
-
     global vc_tracking
     vc_tracking = {} 
     try:
@@ -251,7 +232,6 @@ async def load_tracked_channels_from_db():
                 original_channel_id = int(doc_snapshot.id)
                 guild_id_val = doc_data.get("guild_id")
                 status_channel_id_val = doc_data.get("status_channel_id")
-                
                 guild_id = int(guild_id_val) if guild_id_val is not None else None
                 status_channel_id = int(status_channel_id_val) if status_channel_id_val is not None else None
                 original_channel_name = doc_data.get("original_channel_name")
@@ -259,7 +239,6 @@ async def load_tracked_channels_from_db():
                 if not all([guild_id, status_channel_id, original_channel_name is not None]): 
                     print_warning(f"DB内のドキュメント {doc_snapshot.id} に必要な情報が不足しているか型が不正です。スキップ。 Data: {doc_data}")
                     continue
-
                 vc_tracking[original_channel_id] = {
                     "guild_id": guild_id,
                     "status_channel_id": status_channel_id,
@@ -273,22 +252,19 @@ async def load_tracked_channels_from_db():
     except Exception as e: 
         print_error(f"Firestoreからのデータ読み込み中にエラー: {e}", exc_info=True)
 
-
 async def save_tracked_original_to_db(original_channel_id: int, guild_id: int, status_channel_id: int, original_channel_name: str):
     if not db: return
     try:
-        # Ensure firestore module is available (might not be if init_firestore failed before import)
         if 'firestore' not in globals() or globals()['firestore'] is None:
-            print_error("Firestoreモジュールが利用可能でないため、DBへの保存をスキップします。")
+            print_error("Firestoreモジュールが利用可能でないため、DBへの保存をスキップします (save)。")
             return
-
         doc_ref = db.collection(FIRESTORE_COLLECTION_NAME).document(str(original_channel_id))
         await asyncio.wait_for(
             doc_ref.set({
                 "guild_id": guild_id, 
                 "status_channel_id": status_channel_id,
                 "original_channel_name": original_channel_name,
-                "updated_at": firestore.SERVER_TIMESTAMP # Use the globally available firestore
+                "updated_at": firestore.SERVER_TIMESTAMP 
             }),
             timeout=DB_CALL_TIMEOUT
         )
@@ -334,14 +310,11 @@ async def _create_status_vc_for_original(original_vc: discord.VoiceChannel) -> d
     if not status_category:
         print_error(f"STATUSカテゴリの取得/作成に失敗しました ({guild.name} の {original_vc.name} 用)。")
         return None
-
     user_count = len([m for m in original_vc.members if not m.bot])
     user_count = min(user_count, 999) 
-
     status_channel_name_base = original_vc.name[:65] 
     status_channel_name = f"{status_channel_name_base}：{user_count} users"
     status_channel_name = re.sub(r'\s{2,}', ' ', status_channel_name).strip()[:100]
-
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(
             view_channel=True, read_message_history=True, connect=False, speak=False, stream=False,
@@ -366,24 +339,14 @@ async def _create_status_vc_for_original(original_vc: discord.VoiceChannel) -> d
         print_error(f"Status VCの作成に失敗 ({original_vc.name}): {e}", exc_info=True)
     return None
 
-def get_vc_lock(vc_id: int) -> asyncio.Lock:
-    if vc_id not in vc_locks:
-        vc_locks[vc_id] = asyncio.Lock()
-        print_debug(f"VC ID {vc_id} のために新しいLockオブジェクトを作成しました。")
-    return vc_locks[vc_id]
+# Removed get_vc_lock function as locks are removed
 
 async def register_new_vc_for_tracking(original_vc: discord.VoiceChannel, send_feedback_to_ctx=None):
     original_vc_id = original_vc.id
-    lock = get_vc_lock(original_vc_id)
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "RegisterTask"
+    print_debug(f"[{task_name}|register_new_vc] Processing for VC ID: {original_vc_id} (No lock)")
     
-    print_debug(f"[{task_name}|register_new_vc] Attempting to acquire lock for VC ID: {original_vc_id}")
-    acquired = False
-    try:
-        await asyncio.wait_for(lock.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT)
-        acquired = True
-        print_debug(f"[{task_name}|register_new_vc] Lock acquired for VC ID: {original_vc_id}")
-
+    try: # No lock acquisition block
         if original_vc_id in vc_tracking:
             track_info = vc_tracking[original_vc_id]
             guild_id_for_check = track_info.get("guild_id")
@@ -421,42 +384,17 @@ async def register_new_vc_for_tracking(original_vc: discord.VoiceChannel, send_f
             if original_vc_id in vc_tracking: del vc_tracking[original_vc_id]
             await remove_tracked_original_from_db(original_vc_id) 
             return False
-    except asyncio.TimeoutError:
-        print_error(f"[{task_name}|register_new_vc] Timeout acquiring lock for VC ID: {original_vc_id}. Registration skipped.")
-        if send_feedback_to_ctx:
-            await send_feedback_to_ctx.send(f"VC「{original_vc.name}」の処理が混み合っているようですニャ。少し待ってから試してニャ。")
-        return False
-    except Exception as e:
+    except Exception as e: # Catch any other error during the process
         print_error(f"[{task_name}|register_new_vc] Error during registration for VC {original_vc_id}: {e}", exc_info=True)
         return False
-    finally:
-        if acquired and lock.locked(): 
-            lock.release()
-            print_debug(f"[{task_name}|register_new_vc] Lock for VC ID: {original_vc_id} released in finally.")
-        elif not acquired:
-            print_debug(f"[{task_name}|register_new_vc] Lock for VC ID: {original_vc_id} was not acquired due to timeout. No release needed by this instance.")
-
 
 async def unregister_vc_tracking(original_channel_id: int, guild: discord.Guild | None, send_feedback_to_ctx=None):
-    lock = get_vc_lock(original_channel_id)
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "UnregisterTask"
-    print_debug(f"[{task_name}|unregister_vc] Attempting to acquire lock for VC ID: {original_channel_id}")
-    acquired = False
+    print_debug(f"[{task_name}|unregister_vc] Processing for VC ID: {original_channel_id} (No lock)")
     try:
-        await asyncio.wait_for(lock.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT)
-        acquired = True
-        print_debug(f"[{task_name}|unregister_vc] Lock acquired for VC ID: {original_channel_id}")
         await unregister_vc_tracking_internal(original_channel_id, guild, send_feedback_to_ctx, is_internal_call=False)
-    except asyncio.TimeoutError:
-        print_error(f"[{task_name}|unregister_vc] Timeout acquiring lock for VC ID: {original_channel_id}. Unregistration skipped.")
-        if send_feedback_to_ctx:
-             await send_feedback_to_ctx.send(f"VC ID「{original_channel_id}」の処理が混み合っているようですニャ。少し待ってから試してニャ。")
     except Exception as e:
         print_error(f"[{task_name}|unregister_vc] Error during unregistration for VC {original_channel_id}: {e}", exc_info=True)
-    finally:
-        if acquired and lock.locked():
-            lock.release()
-            print_debug(f"[{task_name}|unregister_vc] Lock for VC ID: {original_channel_id} released in finally.")
 
 async def unregister_vc_tracking_internal(original_channel_id: int, guild: discord.Guild | None, send_feedback_to_ctx=None, is_internal_call: bool = False):
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "UnregInternalTask"
@@ -477,7 +415,7 @@ async def unregister_vc_tracking_internal(original_channel_id: int, guild: disco
                 try:
                     await asyncio.wait_for(status_vc.delete(reason="オリジナルVCの追跡停止のため"), timeout=API_CALL_TIMEOUT)
                     print_info(f"[{task_name}|unregister_internal] 削除成功: Status VC {status_vc.name} (ID: {status_vc.id})")
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError: # ... (handle exceptions)
                     print_error(f"[{task_name}|unregister_internal] Status VC {status_vc.id} の削除タイムアウト")
                 except discord.NotFound:
                     print_info(f"[{task_name}|unregister_internal] Status VC {status_channel_id} は既に削除されていました。")
@@ -485,18 +423,12 @@ async def unregister_vc_tracking_internal(original_channel_id: int, guild: disco
                     print_error(f"[{task_name}|unregister_internal] Status VC {status_vc.name} (ID: {status_vc.id}) の削除に失敗 (権限不足): {e_forbidden}")
                 except Exception as e_delete:
                     print_error(f"[{task_name}|unregister_internal] Status VC {status_vc.name} (ID: {status_vc.id}) の削除中にエラー: {e_delete}", exc_info=True)
-            elif status_vc:
-                 print_warning(f"[{task_name}|unregister_internal] Status Channel ID {status_channel_id} for original {original_channel_id} is not a VoiceChannel. Type: {type(status_vc)}")
-            else:
-                print_info(f"[{task_name}|unregister_internal] Status VC ID {status_channel_id} for original {original_channel_id} not found in guild {current_guild.name}.")
-        elif not current_guild and status_channel_id:
-             print_warning(f"[{task_name}|unregister_internal] Guild for original_channel_id {original_channel_id} not found. Cannot delete status VC {status_channel_id}.")
-    
+
     vc_zero_stats.pop(original_channel_id, None)
     vc_discord_api_cooldown_until.pop(original_channel_id, None)
-    
     await remove_tracked_original_from_db(original_channel_id) 
     if not is_internal_call and send_feedback_to_ctx:
+        # ... (feedback logic as before)
         display_name = original_vc_name_for_msg
         if guild: 
              actual_original_vc = guild.get_channel(original_channel_id)
@@ -513,26 +445,16 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
         return
 
     ovc_id = original_vc.id
-    lock = get_vc_lock(ovc_id)
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "UpdateTask"
+    print_debug(f"[{task_name}|update_dynamic] Processing for VC ID: {ovc_id} (No lock)")
     
-    print_debug(f"[{task_name}|update_dynamic] Attempting to acquire lock for VC ID: {ovc_id} (Lock currently: {'locked' if lock.locked() else 'unlocked'})")
-    if lock.locked(): 
-        print_debug(f"[{task_name}|update_dynamic] Lock for VC ID {ovc_id} is ALREADY HELD by another task. Skipping this update cycle.")
-        return
-
-    acquired = False
-    try:
-        await asyncio.wait_for(lock.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT)
-        acquired = True
-        print_debug(f"[{task_name}|update_dynamic] Lock acquired for VC ID: {ovc_id}")
-        
+    try: # No lock acquisition block
         current_original_vc = bot.get_channel(ovc_id)
         current_status_vc = bot.get_channel(status_vc.id)
 
         if not isinstance(current_original_vc, discord.VoiceChannel) or \
            not isinstance(current_status_vc, discord.VoiceChannel):
-            print_warning(f"[{task_name}|update_dynamic] Original VC {ovc_id} or Status VC {status_vc.id} became invalid after lock. Skipping.")
+            print_warning(f"[{task_name}|update_dynamic] Original VC {ovc_id} or Status VC {status_vc.id} became invalid. Skipping.")
             return 
         original_vc, status_vc = current_original_vc, current_status_vc 
 
@@ -586,8 +508,6 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
             if is_special_zero_update_condition and ovc_id in vc_zero_stats:
                  vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
             return 
-
-        # Custom rate limit (5 min / 2 updates) is REMOVED.
         
         print_info(f"[{task_name}|update_dynamic] Attempting name change for {status_vc.name} ('{current_status_vc_name}') to '{final_new_name}'")
         try:
@@ -613,14 +533,9 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
         except Exception as e_edit: 
             print_error(f"[{task_name}|update_dynamic] Unexpected error editing {status_vc.name}: {e_edit}", exc_info=True)
     
-    except asyncio.TimeoutError:
-        print_error(f"[{task_name}|update_dynamic] Timeout acquiring lock for VC ID: {ovc_id}. Update skipped.")
-    except Exception as e_outer_update: 
+    except Exception as e_outer_update: # Catch any other exceptions in the outer try block
         print_error(f"[{task_name}|update_dynamic] Outer error for VC {ovc_id}: {e_outer_update}", exc_info=True)
-    finally:
-        if acquired and lock.locked():
-            lock.release()
-            print_debug(f"[{task_name}|update_dynamic] Lock for VC ID: {ovc_id} released in finally.")
+
 
 @bot.event
 async def on_ready():
@@ -647,17 +562,13 @@ async def on_ready():
     tracked_ids_to_process = list(vc_tracking.keys()) 
     
     for original_cid in tracked_ids_to_process:
-        print_info(f"[on_ready] Processing VC ID: {original_cid}")
-        async def process_vc_on_ready_task(cid):
+        print_info(f"[on_ready] Processing VC ID: {original_cid} (No Lock in this loop iteration)")
+        # Directly call logic or schedule a task that itself does not re-acquire this loop's conceptual lock
+        async def process_vc_on_ready_task(cid): # Renamed for clarity
             task_name_on_ready = asyncio.current_task().get_name() if asyncio.current_task() else f"OnReadyTask-{cid}"
-            lock_on_ready = get_vc_lock(cid)
-            acquired_ready_lock = False
-            print_debug(f"[{task_name_on_ready}] Attempting lock for VC ID {cid}")
+            # No lock acquisition here, direct processing
+            print_debug(f"[{task_name_on_ready}] Executing on_ready logic for VC ID {cid}")
             try:
-                await asyncio.wait_for(lock_on_ready.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT * 3)
-                acquired_ready_lock = True
-                print_debug(f"[{task_name_on_ready}] Lock acquired for VC ID {cid}")
-
                 if cid not in vc_tracking:
                     print_info(f"[{task_name_on_ready}] VC {cid} no longer in tracking. Skipping.")
                     return
@@ -667,7 +578,7 @@ async def on_ready():
 
                 if not guild_on_ready:
                     print_warning(f"[{task_name_on_ready}] Guild {track_info_on_ready['guild_id']} (Original VC {cid}) not found. Unregistering.")
-                    await unregister_vc_tracking_internal(cid, None, is_internal_call=True)
+                    await unregister_vc_tracking_internal(cid, None, is_internal_call=True) # unregister_internal assumes no lock by itself
                     return
 
                 original_vc_on_ready = guild_on_ready.get_channel(cid)
@@ -682,8 +593,8 @@ async def on_ready():
                 vc_zero_stats.pop(cid, None) # Reset zero stats on ready
 
                 if isinstance(status_vc_on_ready, discord.VoiceChannel) and status_vc_on_ready.category and STATUS_CATEGORY_NAME.lower() in status_vc_on_ready.category.name.lower():
-                    print_info(f"[{task_name_on_ready}] Original VC {original_vc_on_ready.name} existing Status VC {status_vc_on_ready.name} is valid. Updating name.")
-                    await update_dynamic_status_channel_name(original_vc_on_ready, status_vc_on_ready) 
+                    print_info(f"[{task_name_on_ready}] Original VC {original_vc_on_ready.name} existing Status VC {status_vc_on_ready.name} is valid. Scheduling name update.")
+                    asyncio.create_task(update_dynamic_status_channel_name(original_vc_on_ready, status_vc_on_ready), name=f"UpdateTask-OnReady-{cid}")
                 else:
                     if status_vc_on_ready:
                         print_warning(f"[{task_name_on_ready}] Status VC {status_vc_on_ready.id if status_vc_on_ready else 'N/A'} for {original_vc_on_ready.name} invalid/moved. Deleting and recreating.")
@@ -704,20 +615,14 @@ async def on_ready():
                         }
                         await save_tracked_original_to_db(cid, guild_on_ready.id, new_status_vc_obj_on_ready.id, original_vc_on_ready.name)
                         print_info(f"[{task_name_on_ready}] Status VC for {original_vc_on_ready.name} recreated: {new_status_vc_obj_on_ready.name}")
-                        await update_dynamic_status_channel_name(original_vc_on_ready, new_status_vc_obj_on_ready)
+                        asyncio.create_task(update_dynamic_status_channel_name(original_vc_on_ready, new_status_vc_obj_on_ready), name=f"UpdateTask-OnReady-Recreate-{cid}")
                     else:
                         print_error(f"[{task_name_on_ready}] Failed to recreate status VC for {original_vc_on_ready.name}.")
             
-            except asyncio.TimeoutError:
-                print_error(f"[{task_name_on_ready}] Timeout acquiring lock for VC ID: {cid} during on_ready task. Skipping.")
-            except Exception as e_on_ready_task:
-                print_error(f"[{task_name_on_ready}] Error processing VC {cid} in on_ready task: {e_on_ready_task}", exc_info=True)
-            finally:
-                if acquired_ready_lock and lock_on_ready.locked():
-                    lock_on_ready.release()
-                    print_debug(f"[{task_name_on_ready}] Lock for VC ID: {cid} released in finally.")
+            except Exception as e_on_ready_task_no_lock: # Catch errors within the task
+                print_error(f"[{task_name_on_ready}] Error processing VC {cid} in on_ready task (no lock version): {e_on_ready_task}", exc_info=True)
 
-        asyncio.create_task(process_vc_on_ready_task(original_cid), name=f"OnReadyTask-VC-{original_cid}")
+        asyncio.create_task(process_vc_on_ready_task(original_cid), name=f"OnReadyProcTask-VC-{original_cid}")
             
     print_info("起動時の追跡VC状態整合性チェックのタスク投入が完了しました。")
     if not periodic_status_update.is_running():
@@ -726,7 +631,6 @@ async def on_ready():
             print_info("定期ステータス更新タスクを開始しました。")
         except RuntimeError as e_task_start: 
              print_warning(f"定期ステータス更新タスクの開始試行中にエラー: {e_task_start}")
-
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -788,20 +692,17 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     if original_channel_id_to_process:
         print_info(f"[on_guild_channel_delete] Processing deletion related to original VC ID: {original_channel_id_to_process}")
         async def handle_deletion_logic_wrapper(ocid_to_process, deleted_is_status, g_obj):
-            lock = get_vc_lock(ocid_to_process)
+            # No lock acquisition in this wrapper as sub-functions (unregister_internal, _create, save, update) will run directly or as new tasks.
+            # This reduces complexity of nested locks but increases risk of race conditions if not careful.
+            # For deletion, usually less critical than rapid updates.
             task_name_del = asyncio.current_task().get_name() if asyncio.current_task() else "DelWrapTask"
-            acquired_del_lock = False
-            print_debug(f"[{task_name_del}|handle_deletion_logic_wrapper] Attempting lock for {ocid_to_process}")
+            print_debug(f"[{task_name_del}|handle_deletion_logic_wrapper] Processing deletion for {ocid_to_process} (No lock at this level)")
             try:
-                await asyncio.wait_for(lock.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT * 3)
-                acquired_del_lock = True
-                print_debug(f"[{task_name_del}|handle_deletion_logic_wrapper] Lock acquired for {ocid_to_process}")
-                
                 if deleted_is_status:
                     original_vc_obj = g_obj.get_channel(ocid_to_process) if g_obj else None
                     if original_vc_obj and isinstance(original_vc_obj, discord.VoiceChannel):
                         print_info(f"[{task_name_del}|handle_deletion_logic_wrapper] Original VC {original_vc_obj.name} still exists. Attempting to recreate status VC.")
-                        await unregister_vc_tracking_internal(ocid_to_process, g_obj, is_internal_call=True)
+                        await unregister_vc_tracking_internal(ocid_to_process, g_obj, is_internal_call=True) # This is now lock-free
                         
                         new_status_vc = await _create_status_vc_for_original(original_vc_obj)
                         if new_status_vc:
@@ -820,14 +721,8 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
                         await unregister_vc_tracking_internal(ocid_to_process, g_obj, is_internal_call=True)
                 else: 
                     await unregister_vc_tracking_internal(ocid_to_process, g_obj, is_internal_call=True)
-            except asyncio.TimeoutError:
-                print_error(f"[{task_name_del}|handle_deletion_logic_wrapper] Timeout acquiring lock for {ocid_to_process}. Deletion processing may be incomplete.")
             except Exception as e_del_handler_wrapper:
                 print_error(f"[{task_name_del}|handle_deletion_logic_wrapper] Error for {ocid_to_process}: {e_del_handler_wrapper}", exc_info=True)
-            finally:
-                if acquired_del_lock and lock.locked():
-                    lock.release()
-                    print_debug(f"[{task_name_del}|handle_deletion_logic_wrapper] Lock for {ocid_to_process} released in finally.")
         asyncio.create_task(handle_deletion_logic_wrapper(original_channel_id_to_process, is_status_vc_deleted, guild_where_deleted), name=f"DeleteTask-{original_channel_id_to_process}")
 
 @tasks.loop(minutes=3) 
@@ -847,7 +742,7 @@ async def periodic_status_update():
         guild = bot.get_guild(track_info["guild_id"])
         if not guild: 
             print_warning(f"[{task_name}|periodic_update] Guild {track_info['guild_id']} (Original VC {original_cid}) not found. Scheduling unregistration.")
-            asyncio.create_task(unregister_vc_tracking(original_cid, None), name=f"UnregisterTask-Periodic-NoGuild-{original_cid}")
+            asyncio.create_task(unregister_vc_tracking(original_cid, None), name=f"UnregisterTask-Periodic-NoGuild-{original_cid}") # unregister_vc_tracking is now lock-free at its top level
             continue
         
         original_vc = guild.get_channel(original_cid)
@@ -860,29 +755,15 @@ async def periodic_status_update():
                 
                 async def fix_category_task_wrapper(ovc_obj, g_obj): 
                     fix_task_name_inner = asyncio.current_task().get_name() if asyncio.current_task() else "FixCatTaskInner"
-                    print_debug(f"[{fix_task_name_inner}|fix_category_task_wrapper] Attempting to fix category for {ovc_obj.name}")
-                    lock_fix = get_vc_lock(ovc_obj.id)
-                    acquired_fix_lock = False
+                    print_debug(f"[{fix_task_name_inner}|fix_category_task_wrapper] Attempting to fix category for {ovc_obj.name} (No explicit lock in wrapper)")
                     try:
-                        await asyncio.wait_for(lock_fix.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT * 2)
-                        acquired_fix_lock = True
-                        print_debug(f"[{fix_task_name_inner}|fix_category_task_wrapper] Lock acquired for unregister part of {ovc_obj.id}")
+                        # Direct calls as locking is removed from these functions' top level
                         await unregister_vc_tracking_internal(ovc_obj.id, g_obj, is_internal_call=True)
-                    except asyncio.TimeoutError: 
-                        print_error(f"[{fix_task_name_inner}|fix_category_task_wrapper] Timeout acquiring lock for {ovc_obj.id} (unregister part).")
-                        return 
-                    except Exception as e_fix_lock_unregister: 
-                        print_error(f"[{fix_task_name_inner}|fix_category_task_wrapper] Error during lock/unregister for {ovc_obj.id}: {e_fix_lock_unregister}", exc_info=True)
-                        if acquired_fix_lock and lock_fix.locked(): lock_fix.release() 
-                        return
-                    finally: 
-                        if acquired_fix_lock and lock_fix.locked(): 
-                            lock_fix.release()
-                            print_debug(f"[{fix_task_name_inner}|fix_category_task_wrapper] Lock for {ovc_obj.id} (unregister part) released.")
-                    
-                    print_info(f"[{fix_task_name_inner}|fix_category_task_wrapper] Re-registering {ovc_obj.name} to fix category.")
-                    await register_new_vc_for_tracking(ovc_obj) 
-                    print_debug(f"[{fix_task_name_inner}|fix_category_task_wrapper] Category fix attempt for {ovc_obj.id} finished.")
+                        print_info(f"[{fix_task_name_inner}|fix_category_task_wrapper] Re-registering {ovc_obj.name} to fix category.")
+                        await register_new_vc_for_tracking(ovc_obj) 
+                        print_debug(f"[{fix_task_name_inner}|fix_category_task_wrapper] Category fix attempt for {ovc_obj.id} finished.")
+                    except Exception as e_fix_cat_wrap: 
+                        print_error(f"[{fix_task_name_inner}|fix_category_task_wrapper] Error in category fix for {ovc_obj.id}: {e_fix_cat_wrap}", exc_info=True)
                 asyncio.create_task(fix_category_task_wrapper(original_vc, guild), name=f"FixCategoryTask-{original_cid}")
                 continue 
             asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc), name=f"UpdateTask-Periodic-{original_cid}")
@@ -895,29 +776,14 @@ async def periodic_status_update():
             
             async def recreate_status_vc_task_wrapper(ovc_obj, g_obj): 
                 recreate_task_name_inner = asyncio.current_task().get_name() if asyncio.current_task() else "RecreateStatusTaskInner"
-                print_debug(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Attempting to recreate status for {ovc_obj.name}")
-                lock_recreate = get_vc_lock(ovc_obj.id)
-                acquired_recreate_lock = False
+                print_debug(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Attempting to recreate status for {ovc_obj.name} (No explicit lock in wrapper)")
                 try:
-                    await asyncio.wait_for(lock_recreate.acquire(), timeout=LOCK_ACQUIRE_TIMEOUT * 2)
-                    acquired_recreate_lock = True
-                    print_debug(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Lock acquired for unregister part of {ovc_obj.id}")
                     await unregister_vc_tracking_internal(ovc_obj.id, g_obj, is_internal_call=True) 
-                except asyncio.TimeoutError: 
-                    print_error(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Timeout acquiring lock for {ovc_obj.id} (unregister part).")
-                    return
-                except Exception as e_recreate_lock_unregister: 
-                    print_error(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Error during lock/unregister for {ovc_obj.id}: {e_recreate_lock_unregister}", exc_info=True)
-                    if acquired_recreate_lock and lock_recreate.locked(): lock_recreate.release()
-                    return
-                finally: 
-                    if acquired_recreate_lock and lock_recreate.locked(): 
-                        lock_recreate.release()
-                        print_debug(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Lock for {ovc_obj.id} (unregister part) released.")
-                
-                print_info(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Re-registering {ovc_obj.name} to recreate status VC.")
-                await register_new_vc_for_tracking(ovc_obj) 
-                print_debug(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Status VC recreate attempt for {ovc_obj.id} finished.")
+                    print_info(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Re-registering {ovc_obj.name} to recreate status VC.")
+                    await register_new_vc_for_tracking(ovc_obj) 
+                    print_debug(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Status VC recreate attempt for {ovc_obj.id} finished.")
+                except Exception as e_recreate_wrap:
+                     print_error(f"[{recreate_task_name_inner}|recreate_status_vc_task_wrapper] Error in status VC recreate for {ovc_obj.id}: {e_recreate_wrap}", exc_info=True)
             
             asyncio.create_task(recreate_status_vc_task_wrapper(original_vc, guild), name=f"RecreateStatusTask-{original_cid}")
         
@@ -1019,20 +885,6 @@ async def nah_help_prefix(ctx: commands.Context):
 
 # --- Main Bot Execution ---
 async def start_bot_main():
-    global logger 
-    if not logger:
-        print("CRITICAL: Logger is None in start_bot_main. Attempting re-setup.", file=sys.stderr)
-        logger = setup_logging() 
-        if not logger:
-            print("CRITICAL: Fallback logger also failed in start_bot_main. Exiting or proceeding without reliable logging.", file=sys.stderr)
-            # For this critical failure, we will attempt to use print directly for critical messages.
-            def print_critical_fallback(message, *args, exc_info=None): # Simple fallback
-                 print(f"{_get_timestamp_for_print()} CRITICAL - {message}" % args, file=sys.stderr, flush=True)
-                 if exc_info: print(traceback.format_exc(), file=sys.stderr, flush=True)
-            global print_info, print_debug, print_warning, print_error # Re-assign to fallback
-            print_info = print_debug = print_warning = print_error = print_critical_fallback
-
-
     if DISCORD_TOKEN is None:
         print_error("DISCORD_TOKEN が環境変数に設定されていません。Botを起動できません。")
         return
@@ -1058,10 +910,6 @@ async def start_bot_main():
 
 # --- Entry Point ---
 if __name__ == "__main__":
-    if not logger: 
-        print("FATAL: Logger was not set up correctly before __main__. Exiting.", file=sys.stderr)
-        sys.exit("Logger setup failed")
-
     try:
         asyncio.run(start_bot_main())
     except KeyboardInterrupt:
