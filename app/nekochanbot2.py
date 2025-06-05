@@ -33,7 +33,7 @@ def keep_alive():
     logger.info(f"Keep-aliveサーバーがポート {os.environ.get('PORT', 8080)} で起動準備完了。")
 
 # --- Logging Configuration ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(module)s:%(lineno)d %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(module)s:%(lineno)d %(message)s")
 logger = logging.getLogger(__name__)
 
 # --- Bot Intents Configuration ---
