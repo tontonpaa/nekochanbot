@@ -166,7 +166,7 @@ async def init_firestore():
         else: print_warning("GOOGLE_APPLICATION_CREDENTIALS未設定。Firestore無効。"); db = None; return False
     except Exception as e: print_error(f"Firestore初期化エラー: {e}", exc_info=True); db = None; return False
 
-# --- Individual VC Persistence ---
+# --- Persistence Functions ---
 async def load_tracked_channels_from_db():
     if not db: return
     global vc_tracking; vc_tracking = {}
@@ -202,7 +202,6 @@ async def remove_tracked_original_from_db(original_channel_id):
         await db.collection(FIRESTORE_COLLECTION_NAME).document(str(original_channel_id)).delete()
     except Exception as e: print_error(f"Firestore削除エラー (Original VC ID: {original_channel_id}): {e}", exc_info=True)
 
-# --- Summary VC Persistence ---
 async def load_summary_vcs_from_db():
     if not db: return
     global summary_vc_tracking; summary_vc_tracking = {}
@@ -229,26 +228,20 @@ async def remove_summary_vc_from_db(guild_id):
         await db.collection(SUMMARY_FIRESTORE_COLLECTION_NAME).document(str(guild_id)).delete()
     except Exception as e: print_error(f"サマリーVCのFirestore削除エラー (Guild ID: {guild_id}): {e}", exc_info=True)
 
-# --- Core Logic ---
+# --- Core Logic Functions ---
 async def get_or_create_status_category(guild: discord.Guild):
     for category in guild.categories:
-        if STATUS_CATEGORY_NAME.lower() in category.name.lower(): return category
+        if STATUS_CATEGORY_NAME.lower() in category.name.lower():
+            return category
     try:
         overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False)}
         return await guild.create_category(STATUS_CATEGORY_NAME, overwrites=overwrites)
-    except Exception as e: print_error(f"カテゴリ作成エラー: {e}", exc_info=True); return None
-
-async def register_new_vc_for_tracking(original_vc, send_feedback_to_ctx=None):
-    # (This function's internal logic is mostly unchanged, but simplified for brevity here)
-    pass # Placeholder for the original logic
-
-async def unregister_vc_tracking(original_channel_id, guild, send_feedback_to_ctx=None):
-    # (This function's internal logic is mostly unchanged, but simplified for brevity here)
-    pass # Placeholder for the original logic
+    except Exception as e:
+        print_error(f"カテゴリ「{STATUS_CATEGORY_NAME}」作成中エラー: {e}", exc_info=True)
+        return None
 
 async def update_dynamic_status_channel_name(original_vc, status_vc):
     if not original_vc or not status_vc: return
-
     ovc_id = original_vc.id
     if vc_processing_flags.get(ovc_id): return
     vc_processing_flags[ovc_id] = True
@@ -257,7 +250,7 @@ async def update_dynamic_status_channel_name(original_vc, status_vc):
         count = len([m for m in original_vc.members if not m.bot])
         new_name = f"{base_name}：{count} users"
         if new_name != status_vc.name:
-            await status_vc.edit(name=new_name)
+            await status_vc.edit(name=new_name, reason="個別VC人数更新")
     except Exception as e:
         print_error(f"個別VC名更新エラー (VC ID: {ovc_id}): {e}", exc_info=True)
     finally:
@@ -280,13 +273,58 @@ async def update_summary_vc_name(guild):
         total_user_count = sum(len([m for m in vc.members if not m.bot]) for vc in guild.voice_channels if not (vc.category and STATUS_CATEGORY_NAME.lower() in vc.category.name.lower()))
         new_name = f"{base_name}：{total_user_count} users"
         if new_name != summary_vc.name:
-            await summary_vc.edit(name=new_name)
+            await summary_vc.edit(name=new_name, reason="サーバー全体のVC参加人数更新")
     except Exception as e:
         print_error(f"サマリーVC名更新エラー (Guild ID: {guild_id}): {e}", exc_info=True)
     finally:
         summary_vc_processing_flags.pop(guild_id, None)
 
-# --- Events ---
+async def register_new_vc_for_tracking(original_vc, send_feedback_to_ctx=None):
+    if vc_processing_flags.get(original_vc.id): return
+    vc_processing_flags[original_vc.id] = True
+    try:
+        guild = original_vc.guild
+        status_category = await get_or_create_status_category(guild)
+        if not status_category:
+            if send_feedback_to_ctx: await send_feedback_to_ctx.send("STATUSカテゴリの作成に失敗しましたニャ😿")
+            return
+        
+        count = len([m for m in original_vc.members if not m.bot])
+        status_channel_name = f"{original_vc.name[:65]}：{count} users"
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False)}
+        
+        new_status_vc = await guild.create_voice_channel(name=status_channel_name, category=status_category, overwrites=overwrites)
+        vc_tracking[original_vc.id] = {"guild_id": guild.id, "status_channel_id": new_status_vc.id, "original_channel_name": original_vc.name}
+        await save_tracked_original_to_db(original_vc.id, guild.id, new_status_vc.id, original_vc.name)
+        if send_feedback_to_ctx: await send_feedback_to_ctx.send(f"VC「{original_vc.name}」の追跡を開始したニャ。")
+
+    except Exception as e:
+        print_error(f"新規VC追跡エラー (VC ID: {original_vc.id}): {e}", exc_info=True)
+        if send_feedback_to_ctx: await send_feedback_to_ctx.send("追跡開始中にエラーが発生しましたニャ😿")
+    finally:
+        vc_processing_flags.pop(original_vc.id, None)
+
+async def unregister_vc_tracking(original_channel_id, guild, send_feedback_to_ctx=None):
+    if vc_processing_flags.get(original_channel_id): return
+    vc_processing_flags[original_channel_id] = True
+    try:
+        track_info = vc_tracking.pop(original_channel_id, None)
+        if track_info:
+            status_vc_id = track_info["status_channel_id"]
+            status_vc = guild.get_channel(status_vc_id)
+            if status_vc:
+                await status_vc.delete(reason="追跡停止")
+            await remove_tracked_original_from_db(original_channel_id)
+        if send_feedback_to_ctx:
+            vc_name = track_info.get("original_channel_name", f"ID: {original_channel_id}") if track_info else f"ID: {original_channel_id}"
+            await send_feedback_to_ctx.send(f"VC「{vc_name}」の追跡を停止したニャ。")
+    except Exception as e:
+        print_error(f"VC追跡解除エラー (VC ID: {original_channel_id}): {e}", exc_info=True)
+        if send_feedback_to_ctx: await send_feedback_to_ctx.send("追跡停止中にエラーが発生しましたニャ�")
+    finally:
+        vc_processing_flags.pop(original_channel_id, None)
+
+# --- Bot Events ---
 @bot.event
 async def on_ready():
     print_info(f'ログイン成功: {bot.user.name}')
@@ -309,23 +347,21 @@ async def on_voice_state_update(member, before, after):
         if cid in vc_tracking:
             track_info = vc_tracking[cid]
             original_vc = guild.get_channel(cid)
-            status_vc = guild.get_channel(track_info["status_channel_id"])
-            asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc))
+            status_vc = guild.get_channel(track_info.get("status_channel_id"))
+            if original_vc and status_vc:
+                asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc))
     
     if guild.id in summary_vc_tracking:
         asyncio.create_task(update_summary_vc_name(guild))
 
-# Other events (on_guild_channel_create, on_guild_channel_delete) are simplified for brevity
-# but their core logic to trigger updates remains.
-
-# --- Tasks ---
+# --- Bot Tasks ---
 @tasks.loop(minutes=3)
 async def periodic_status_update():
     for original_cid, track_info in list(vc_tracking.items()):
         guild = bot.get_guild(track_info["guild_id"])
         if guild:
             original_vc = guild.get_channel(original_cid)
-            status_vc = guild.get_channel(track_info["status_channel_id"])
+            status_vc = guild.get_channel(track_info.get("status_channel_id"))
             if original_vc and status_vc:
                 asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc))
     
@@ -338,34 +374,63 @@ async def periodic_status_update():
 async def periodic_keep_alive_ping():
     print_info("Periodic keep-alive log")
 
-# --- Commands ---
+# --- Bot Commands ---
 @bot.command(name='nah', help="指定した数のメッセージを削除するニャ。 例: !!nah 5")
 @commands.has_permissions(manage_messages=True)
 @commands.bot_has_permissions(manage_messages=True)
 async def nah_command(ctx, num: int):
-    # Command logic is unchanged
-    pass # Placeholder
+    if num <= 0: await ctx.send("1以上の数を指定してニャ🐈"); return
+    if num > 100: await ctx.send("一度に削除できるのは100件までニャ🐈"); return
+    try:
+        deleted_messages = await ctx.channel.purge(limit=num + 1)
+        response_msg = await ctx.send(f"{len(deleted_messages) -1}件のメッセージを削除したニャ🐈")
+        await asyncio.sleep(5); await response_msg.delete()
+    except Exception as e:
+        print_error(f"nahコマンドエラー: {e}", exc_info=True)
 
 @nah_command.error
 async def nah_command_error(ctx, error):
     if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
         print_error(f"nah_commandで権限エラー: {error}")
-        return # エラーメッセージを送信せずに終了
-    # Other error handling remains
+        return
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("数の指定がおかしいニャ。例: `!!nah 5`")
+    else:
+        print_error(f"nah_command 未処理エラー: {error}", exc_info=True)
+        await ctx.send("コマンド実行中に予期せぬエラー発生ニャ。")
 
 @bot.command(name='nah_vc', help="指定VCの人数表示用チャンネルを作成/削除するニャ。")
 @commands.has_permissions(manage_channels=True)
 @commands.bot_has_permissions(manage_channels=True)
 async def nah_vc_command(ctx, *, channel_id_or_name: str):
-    # Command logic is unchanged
-    pass # Placeholder
+    guild = ctx.guild
+    if not guild: return
+    target_vc = None
+    try: vc_id = int(channel_id_or_name); target_vc = guild.get_channel(vc_id)
+    except ValueError:
+        for vc_iter in guild.voice_channels:
+            if vc_iter.name.lower() == channel_id_or_name.lower(): target_vc = vc_iter; break
+        if not target_vc:
+            for vc_iter in guild.voice_channels:
+                if channel_id_or_name.lower() in vc_iter.name.lower(): target_vc = vc_iter; break
+    if not target_vc or not isinstance(target_vc, discord.VoiceChannel) or (target_vc.category and STATUS_CATEGORY_NAME.lower() in target_vc.category.name.lower()):
+        await ctx.send(f"「{channel_id_or_name}」は有効なボイスチャンネルとして見つからなかったニャ😿"); return
+    
+    if target_vc.id in vc_tracking:
+        await unregister_vc_tracking(target_vc.id, guild, send_feedback_to_ctx=ctx)
+    else:
+        await register_new_vc_for_tracking(target_vc, send_feedback_to_ctx=ctx)
 
 @nah_vc_command.error
 async def nah_vc_command_error(ctx, error):
     if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
         print_error(f"nah_vc_commandで権限エラー: {error}")
-        return # エラーメッセージを送信せずに終了
-    # Other error handling remains
+        return
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("どのボイスチャンネルか指定してニャ！ 例: `!!nah_vc General`")
+    else:
+        print_error(f"nah_vc_command 未処理エラー: {error}", exc_info=True)
+        await ctx.send("コマンド実行中に予期せぬエラー発生ニャ。")
 
 @bot.command(name='nah_sum', help="サーバー全体のVC接続人数を集計する鍵付きVCを作成/削除するニャ。")
 @commands.has_permissions(manage_channels=True)
@@ -376,28 +441,51 @@ async def nah_sum_command(ctx):
     guild_id = guild.id
     now = datetime.now(timezone.utc)
 
-    # Cooldown check
+    # 5秒のクールダウン
     last_run = command_cooldowns.get(guild_id)
     if last_run and (now - last_run) < timedelta(seconds=5):
         print_info(f"nah_sum command for guild {guild_id} is on cooldown.")
         return
     command_cooldowns[guild_id] = now
     
-    # Rest of the logic from the previous version...
-    if summary_vc_tracking.get(guild_id):
-        # Deletion logic
-        await ctx.send("集計用チャンネルを削除しますニャ...")
-        # ...
-    else:
-        # Creation logic
-        await ctx.send("集計用チャンネルを作成しますニャ...")
-        # ...
+    if summary_vc_processing_flags.get(guild_id):
+        return
+    summary_vc_processing_flags[guild_id] = True
+
+    try:
+        existing_summary_vc_id = summary_vc_tracking.get(guild_id)
+        if existing_summary_vc_id:
+            await ctx.send("集計用チャンネルを削除しますニャ...", delete_after=5)
+            summary_vc = guild.get_channel(existing_summary_vc_id)
+            if summary_vc:
+                await summary_vc.delete(reason="nah_sumコマンドによる削除")
+            summary_vc_tracking.pop(guild_id, None)
+            await remove_summary_vc_from_db(guild_id)
+            await ctx.send("サーバー全体の人数集計用チャンネルを削除したニャ。", delete_after=5)
+        else:
+            await ctx.send("集計用チャンネルを作成しますニャ...", delete_after=5)
+            status_category = await get_or_create_status_category(guild)
+            if not status_category:
+                await ctx.send("STATUSカテゴリの作成/取得に失敗しましたニャ😿", delete_after=10)
+                return
+            initial_name = "Study/Work：集計中... users"
+            overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False)}
+            new_summary_vc = await guild.create_voice_channel(name=initial_name, category=status_category, overwrites=overwrites)
+            summary_vc_tracking[guild_id] = new_summary_vc.id
+            await save_summary_vc_to_db(guild_id, new_summary_vc.id)
+            asyncio.create_task(update_summary_vc_name(guild))
+            await ctx.send("サーバー全体の人数集計用チャンネルを作成したニャ！", delete_after=5)
+    except Exception as e:
+        print_error(f"nah_sumコマンドエラー: {e}", exc_info=True)
+        await ctx.send("コマンドの実行中にエラーが発生しましたニャ😿", delete_after=10)
+    finally:
+        summary_vc_processing_flags.pop(guild_id, None)
 
 @nah_sum_command.error
 async def nah_sum_command_error(ctx, error):
     if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
         print_error(f"nah_sum_commandで権限エラー: {error}")
-        return # エラーメッセージを送信せずに終了
+        return
     else:
         print_error(f"nah_sum_command 未処理エラー: {error}", exc_info=True)
         await ctx.send("コマンド実行中に予期せぬエラーが発生しましたニャ。")
@@ -421,4 +509,3 @@ if __name__ == "__main__":
         print_info("ユーザーによりBot停止。")
     except Exception as e:
         print_error(f"メイン実行ループエラー: {e}", exc_info=True)
-
