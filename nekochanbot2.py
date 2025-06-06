@@ -97,7 +97,7 @@ def keep_alive():
 
 # --- Bot Intents Configuration ---
 # --- BotのIntents設定 ---
-intents = discord.Intents.default(); intents.guilds = True; intents.voice_states = True; intents.message_content = True
+intents = discord.Intents.all(); intents.guilds = True; intents.voice_states = True; intents.message_content = True
 
 # --- Firestore Client and Constants ---
 # --- Firestoreクライアントと定数 ---
