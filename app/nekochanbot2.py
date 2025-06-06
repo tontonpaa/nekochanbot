@@ -387,10 +387,12 @@ async def unregister_vc_tracking_internal(original_channel_id: int, guild: disco
         except Exception as e: print_error(f"[{task_name}|unregister_internal] 登録解除フィードバック送信エラー: {e}")
 
 async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, status_vc: discord.VoiceChannel):
-    if not original_vc or not status_vc: print_debug(f"Update_dynamic: スキップ - OriginalVC/StatusVCが無効"); return
+    if not original_vc or not status_vc:
+        print_debug("Update_dynamic: スキップ - OriginalVC/StatusVCが無効")
+        return
 
     ovc_id = original_vc.id
-    task_name = asyncio.current_task().get_name() if asyncio.current_task() else "UpdateTask"
+    task_name = asyncio.current_task().get_name() if asyncio.current_task() else f"UpdateTask-{ovc_id}"
 
     if vc_processing_flags.get(ovc_id):
         print_debug(f"[{task_name}|update_dynamic] VC ID {ovc_id} は現在処理中のため名前更新スキップ。")
@@ -400,62 +402,73 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
     print_debug(f"[{task_name}|update_dynamic] Processing flag SET for VC ID: {ovc_id}")
 
     try:
-        current_original_vc = bot.get_channel(ovc_id)
-        current_status_vc = bot.get_channel(status_vc.id)
-
-        if not isinstance(current_original_vc, discord.VoiceChannel) or \
-           not isinstance(current_status_vc, discord.VoiceChannel):
-            print_warning(f"[{task_name}|update_dynamic] Original VC {ovc_id} or Status VC {status_vc.id} invalid after flag set. Skipping.")
-            return
-        original_vc, status_vc = current_original_vc, current_status_vc
-
         now = datetime.now(timezone.utc)
         if ovc_id in vc_discord_api_cooldown_until and now < vc_discord_api_cooldown_until[ovc_id]:
             print_debug(f"[{task_name}|update_dynamic] Discord API cooldown for {original_vc.name}. Skip.")
             return
-        current_members = [member for member in original_vc.members if not member.bot]
+
+        # 最新の状態を取得
+        current_original_vc = bot.get_channel(ovc_id)
+        current_status_vc = bot.get_channel(status_vc.id)
+
+        if not isinstance(current_original_vc, discord.VoiceChannel) or not isinstance(current_status_vc, discord.VoiceChannel):
+            print_warning(f"[{task_name}|update_dynamic] Original VC {ovc_id} or Status VC {status_vc.id} invalid after flag set. Skipping.")
+            return
+        
+        # チャンネル名を変更しないように、現在の名前からプレフィックスを取得
+        current_status_vc_name = current_status_vc.name
+        base_name = ""
+        if "：" in current_status_vc_name:
+            base_name = current_status_vc_name.split("：")[0].strip()
+        else:
+            # フォールバック：もしフォーマットが崩れていたら、保存されている元の名前に戻す
+            track_info = vc_tracking.get(ovc_id)
+            if not track_info:
+                print_warning(f"[{task_name}|update_dynamic] VC {original_vc.name} no longer in tracking. Skipping.")
+                return
+            base_name = track_info.get("original_channel_name", original_vc.name[:65])
+
+        current_members = [member for member in current_original_vc.members if not member.bot]
         count = min(len(current_members), 999)
-        track_info = vc_tracking.get(ovc_id)
-        if not track_info: print_warning(f"[{task_name}|update_dynamic] VC {original_vc.name} not in tracking. Skip."); return
-        base_name = track_info.get("original_channel_name", original_vc.name[:65])
+
         desired_name_str = f"{base_name}：{count} users"
+        
+        # 0人時のタイムアウト処理
         is_special_zero_update_condition = False
         if count == 0:
             if ovc_id not in vc_zero_stats: vc_zero_stats[ovc_id] = {"zero_since": now, "notified_zero_explicitly": False}
             zero_stat = vc_zero_stats[ovc_id]
             if now >= zero_stat["zero_since"] + ZERO_USER_TIMEOUT_DURATION and not zero_stat.get("notified_zero_explicitly", False):
-                desired_name_str = f"{base_name}：0 users"; is_special_zero_update_condition = True
+                desired_name_str = f"{base_name}：0 users"
+                is_special_zero_update_condition = True
         else:
             if ovc_id in vc_zero_stats: del vc_zero_stats[ovc_id]
 
-        try:
-            print_debug(f"[{task_name}|update_dynamic] Fetching current name for status VC {status_vc.id}")
-            fresh_status_vc = await asyncio.wait_for(bot.fetch_channel(status_vc.id), timeout=API_CALL_TIMEOUT)
-            current_status_vc_name = fresh_status_vc.name
-        except asyncio.TimeoutError: print_error(f"[{task_name}|update_dynamic] Timeout fetching status VC name for {status_vc.id}. Skipping."); return
-        except discord.NotFound: print_error(f"[{task_name}|update_dynamic] Status VC {status_vc.id} for {original_vc.name} not found."); return
-        except Exception as e: print_error(f"[{task_name}|update_dynamic] Error fetching status VC name {status_vc.id}: {e}", exc_info=True); return
-
         final_new_name = re.sub(r'\s{2,}', ' ', desired_name_str).strip()[:100]
         if final_new_name == current_status_vc_name:
-            print_debug(f"[{task_name}|update_dynamic] Name for {status_vc.name} ('{final_new_name}') is already correct.")
-            if is_special_zero_update_condition and ovc_id in vc_zero_stats: vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
+            if is_special_zero_update_condition and ovc_id in vc_zero_stats:
+                vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
             return
 
-        print_info(f"[{task_name}|update_dynamic] Attempting name change for {status_vc.name} ('{current_status_vc_name}') to '{final_new_name}'")
+        print_info(f"[{task_name}|update_dynamic] Attempting name change for {current_status_vc.name} to '{final_new_name}'")
         try:
-            await asyncio.wait_for(status_vc.edit(name=final_new_name, reason="VC参加人数更新"), timeout=API_CALL_TIMEOUT)
-            print_info(f"[{task_name}|update_dynamic] SUCCESS name change for {status_vc.name} to '{final_new_name}'")
-            if is_special_zero_update_condition and ovc_id in vc_zero_stats: vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
-            if ovc_id in vc_discord_api_cooldown_until: del vc_discord_api_cooldown_until[ovc_id]
-        except asyncio.TimeoutError: print_error(f"[{task_name}|update_dynamic] Timeout editing status VC name for {status_vc.name}.")
+            await asyncio.wait_for(current_status_vc.edit(name=final_new_name, reason="VC参加人数更新"), timeout=API_CALL_TIMEOUT)
+            print_info(f"[{task_name}|update_dynamic] SUCCESS name change for {current_status_vc.name} to '{final_new_name}'")
+            if is_special_zero_update_condition and ovc_id in vc_zero_stats:
+                vc_zero_stats[ovc_id]["notified_zero_explicitly"] = True
+            if ovc_id in vc_discord_api_cooldown_until:
+                del vc_discord_api_cooldown_until[ovc_id]
+        except asyncio.TimeoutError:
+            print_error(f"[{task_name}|update_dynamic] Timeout editing status VC name for {current_status_vc.name}.")
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = e.retry_after if e.retry_after is not None else 60.0
                 vc_discord_api_cooldown_until[ovc_id] = now + timedelta(seconds=retry_after)
-                print_warning(f"[{task_name}|update_dynamic] Discord API rate limit (429) for {status_vc.name}. Cooldown: {retry_after}s.")
-            else: print_error(f"[{task_name}|update_dynamic] HTTP error {e.status} editing {status_vc.name}: {e.text}", exc_info=True)
-        except Exception as e: print_error(f"[{task_name}|update_dynamic] Unexpected error editing {status_vc.name}: {e}", exc_info=True)
+                print_warning(f"[{task_name}|update_dynamic] Discord API rate limit (429) for {current_status_vc.name}. Cooldown: {retry_after}s.")
+            else:
+                print_error(f"[{task_name}|update_dynamic] HTTP error {e.status} editing {current_status_vc.name}: {e.text}", exc_info=True)
+        except Exception as e:
+            print_error(f"[{task_name}|update_dynamic] Unexpected error editing {current_status_vc.name}: {e}", exc_info=True)
 
     except Exception as e_outer_update:
         print_error(f"[{task_name}|update_dynamic] Outer error for VC {ovc_id}: {e_outer_update}", exc_info=True)
@@ -463,8 +476,6 @@ async def update_dynamic_status_channel_name(original_vc: discord.VoiceChannel, 
         vc_processing_flags.pop(ovc_id, None)
         print_debug(f"[{task_name}|update_dynamic] Processing flag CLEARED for VC ID: {ovc_id}")
 
-# --- NEW: Summary VC Update Logic ---
-# --- NEW: サマリーVCの更新ロジック ---
 async def update_summary_vc_name(guild: discord.Guild):
     if not guild: return
     guild_id = guild.id
@@ -497,17 +508,25 @@ async def update_summary_vc_name(guild: discord.Guild):
 
         total_user_count = 0
         for vc in guild.voice_channels:
-            # STATUSカテゴリのVCと、サマリーVC自体は集計から除外
             if vc.category and STATUS_CATEGORY_NAME.lower() in vc.category.name.lower():
                 continue
             total_user_count += len([m for m in vc.members if not m.bot])
         
         total_user_count = min(total_user_count, 999)
-        desired_name = f"Study/Work：{total_user_count} users"
+
+        # チャンネル名を変更しないように、現在の名前からプレフィックスを取得
+        current_summary_name = summary_vc.name
+        base_name = ""
+        if "：" in current_summary_name:
+            base_name = current_summary_name.split("：")[0].strip()
+        else:
+            # フォールバック
+            base_name = "Study/Work"
+
+        desired_name = f"{base_name}：{total_user_count} users"
         final_new_name = re.sub(r'\s{2,}', ' ', desired_name).strip()[:100]
 
-        if final_new_name == summary_vc.name:
-            print_debug(f"[{task_name}|update_summary] Name for summary VC in {guild.name} ('{final_new_name}') is already correct.")
+        if final_new_name == current_summary_name:
             return
 
         print_info(f"[{task_name}|update_summary] Attempting name change for summary VC in {guild.name} to '{final_new_name}'")
@@ -544,66 +563,21 @@ async def on_ready():
     except Exception as e: print_error(f"アクティビティの設定中にエラー: {e}", exc_info=True)
 
     vc_discord_api_cooldown_until.clear()
-    summary_vc_api_cooldown_until.clear() # NEW
+    summary_vc_api_cooldown_until.clear()
     
     if await init_firestore():
         await load_tracked_channels_from_db()
-        await load_summary_vcs_from_db() # NEW
+        await load_summary_vcs_from_db()
     else:
         print_warning("Firestore利用不可、永続化無効。")
 
-    # Individual VC consistency check
-    # 個別VCの整合性チェック
     print_info("起動時の個別追跡VC状態整合性チェックと更新を開始します...")
-    tracked_ids_to_process = list(vc_tracking.keys())
-    for original_cid in tracked_ids_to_process:
-        print_info(f"[on_ready] Processing individual VC ID: {original_cid}")
-        # ... (個別VCの処理ロジックの残りは変更なし)
-        async def process_vc_on_ready_task(cid):
-            task_name_on_ready = asyncio.current_task().get_name() if asyncio.current_task() else f"OnReadyTask-{cid}"
-            if vc_processing_flags.get(cid):
-                print_debug(f"[{task_name_on_ready}] VC ID {cid} は起動時処理ですでに処理中(他タスク)。スキップ。")
-                return
-            vc_processing_flags[cid] = True
-            print_debug(f"[{task_name_on_ready}] Processing flag SET for VC ID {cid}")
-            try:
-                if cid not in vc_tracking: print_info(f"[{task_name_on_ready}] VC {cid} no longer in tracking. Skipping."); return
-                track_info_on_ready = vc_tracking[cid]
-                guild_on_ready = bot.get_guild(track_info_on_ready["guild_id"])
-                if not guild_on_ready: print_warning(f"[{task_name_on_ready}] Guild {track_info_on_ready['guild_id']} (VC {cid}) not found. Unregistering."); await unregister_vc_tracking_internal(cid, None, is_internal_call=True); return
-                original_vc_on_ready = guild_on_ready.get_channel(cid)
-                if not isinstance(original_vc_on_ready, discord.VoiceChannel): print_warning(f"[{task_name_on_ready}] Original VC {cid} (Guild {guild_on_ready.name}) invalid. Unregistering."); await unregister_vc_tracking_internal(cid, guild_on_ready, is_internal_call=True); return
-                status_vc_id_on_ready = track_info_on_ready.get("status_channel_id")
-                status_vc_on_ready = guild_on_ready.get_channel(status_vc_id_on_ready) if status_vc_id_on_ready else None
-                vc_zero_stats.pop(cid, None)
-                if isinstance(status_vc_on_ready, discord.VoiceChannel) and status_vc_on_ready.category and STATUS_CATEGORY_NAME.lower() in status_vc_on_ready.category.name.lower():
-                    print_info(f"[{task_name_on_ready}] Original VC {original_vc_on_ready.name} existing Status VC {status_vc_on_ready.name} valid. Updating name.")
-                    await update_dynamic_status_channel_name(original_vc_on_ready, status_vc_on_ready)
-                else:
-                    if status_vc_on_ready:
-                        print_warning(f"[{task_name_on_ready}] Status VC {status_vc_on_ready.id if status_vc_on_ready else 'N/A'} for {original_vc_on_ready.name} invalid/moved. Deleting.")
-                        try: await asyncio.wait_for(status_vc_on_ready.delete(reason="Invalid status VC during on_ready"), timeout=API_CALL_TIMEOUT)
-                        except Exception as e_del: print_error(f"[{task_name_on_ready}] Error deleting invalid status VC: {e_del}", exc_info=True)
-                    print_info(f"[{task_name_on_ready}] Status VC for {original_vc_on_ready.name} missing/invalid. Recreating.")
-                    await unregister_vc_tracking_internal(cid, guild_on_ready, is_internal_call=True)
-                    new_status_vc_obj_on_ready = await _create_status_vc_for_original(original_vc_on_ready)
-                    if new_status_vc_obj_on_ready:
-                        vc_tracking[cid] = {"guild_id": guild_on_ready.id, "status_channel_id": new_status_vc_obj_on_ready.id, "original_channel_name": original_vc_on_ready.name}
-                        await save_tracked_original_to_db(cid, guild_on_ready.id, new_status_vc_obj_on_ready.id, original_vc_on_ready.name)
-                        print_info(f"[{task_name_on_ready}] Status VC for {original_vc_on_ready.name} recreated: {new_status_vc_obj_on_ready.name}")
-                        await update_dynamic_status_channel_name(original_vc_on_ready, new_status_vc_obj_on_ready)
-                    else: print_error(f"[{task_name_on_ready}] Failed to recreate status VC for {original_vc_on_ready.name}.")
-            except Exception as e_on_ready_task: print_error(f"[{task_name_on_ready}] Error processing VC {cid} in on_ready task: {e_on_ready_task}", exc_info=True)
-            finally: vc_processing_flags.pop(cid, None); print_debug(f"[{task_name_on_ready}] Processing flag CLEARED for VC ID {cid}")
+    for original_cid in list(vc_tracking.keys()):
         asyncio.create_task(process_vc_on_ready_task(original_cid), name=f"OnReadyProcTask-VC-{original_cid}")
     print_info("起動時の個別追跡VC状態整合性チェックのタスク投入完了。")
-
-    # NEW: Summary VC consistency check
-    # NEW: サマリーVCの整合性チェック
+    
     print_info("起動時のサマリーVC状態整合性チェックと更新を開始します...")
-    summary_guild_ids_to_process = list(summary_vc_tracking.keys())
-    for guild_id in summary_guild_ids_to_process:
-        print_info(f"[on_ready] Processing summary VC for Guild ID: {guild_id}")
+    for guild_id in list(summary_vc_tracking.keys()):
         guild = bot.get_guild(guild_id)
         if guild:
             asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-OnReady-{guild_id}")
@@ -624,161 +598,151 @@ async def on_ready():
         except RuntimeError as e:
             print_warning(f"定期キープアライブPINGタスク開始エラー: {e}")
 
+async def process_vc_on_ready_task(cid):
+    task_name_on_ready = asyncio.current_task().get_name() if asyncio.current_task() else f"OnReadyTask-{cid}"
+    if vc_processing_flags.get(cid):
+        print_debug(f"[{task_name_on_ready}] VC ID {cid} は起動時処理ですでに処理中(他タスク)。スキップ。")
+        return
+    vc_processing_flags[cid] = True
+    print_debug(f"[{task_name_on_ready}] Processing flag SET for VC ID {cid}")
+    try:
+        if cid not in vc_tracking: print_info(f"[{task_name_on_ready}] VC {cid} no longer in tracking. Skipping."); return
+        track_info_on_ready = vc_tracking[cid]
+        guild_on_ready = bot.get_guild(track_info_on_ready["guild_id"])
+        if not guild_on_ready: print_warning(f"[{task_name_on_ready}] Guild {track_info_on_ready['guild_id']} (VC {cid}) not found. Unregistering."); await unregister_vc_tracking_internal(cid, None, is_internal_call=True); return
+        original_vc_on_ready = guild_on_ready.get_channel(cid)
+        if not isinstance(original_vc_on_ready, discord.VoiceChannel): print_warning(f"[{task_name_on_ready}] Original VC {cid} (Guild {guild_on_ready.name}) invalid. Unregistering."); await unregister_vc_tracking_internal(cid, guild_on_ready, is_internal_call=True); return
+        status_vc_id_on_ready = track_info_on_ready.get("status_channel_id")
+        status_vc_on_ready = guild_on_ready.get_channel(status_vc_id_on_ready) if status_vc_id_on_ready else None
+        vc_zero_stats.pop(cid, None)
+        if isinstance(status_vc_on_ready, discord.VoiceChannel) and status_vc_on_ready.category and STATUS_CATEGORY_NAME.lower() in status_vc_on_ready.category.name.lower():
+            print_info(f"[{task_name_on_ready}] Original VC {original_vc_on_ready.name} existing Status VC {status_vc_on_ready.name} valid. Updating name.")
+            await update_dynamic_status_channel_name(original_vc_on_ready, status_vc_on_ready)
+        else:
+            if status_vc_on_ready:
+                print_warning(f"[{task_name_on_ready}] Status VC {status_vc_on_ready.id if status_vc_on_ready else 'N/A'} for {original_vc_on_ready.name} invalid/moved. Deleting.")
+                try: await asyncio.wait_for(status_vc_on_ready.delete(reason="Invalid status VC during on_ready"), timeout=API_CALL_TIMEOUT)
+                except Exception as e_del: print_error(f"[{task_name_on_ready}] Error deleting invalid status VC: {e_del}", exc_info=True)
+            print_info(f"[{task_name_on_ready}] Status VC for {original_vc_on_ready.name} missing/invalid. Recreating.")
+            await unregister_vc_tracking_internal(cid, guild_on_ready, is_internal_call=True)
+            new_status_vc_obj_on_ready = await _create_status_vc_for_original(original_vc_on_ready)
+            if new_status_vc_obj_on_ready:
+                vc_tracking[cid] = {"guild_id": guild_on_ready.id, "status_channel_id": new_status_vc_obj_on_ready.id, "original_channel_name": original_vc_on_ready.name}
+                await save_tracked_original_to_db(cid, guild_on_ready.id, new_status_vc_obj_on_ready.id, original_vc_on_ready.name)
+                print_info(f"[{task_name_on_ready}] Status VC for {original_vc_on_ready.name} recreated: {new_status_vc_obj_on_ready.name}")
+                await update_dynamic_status_channel_name(original_vc_on_ready, new_status_vc_obj_on_ready)
+            else: print_error(f"[{task_name_on_ready}] Failed to recreate status VC for {original_vc_on_ready.name}.")
+    except Exception as e_on_ready_task: print_error(f"[{task_name_on_ready}] Error processing VC {cid} in on_ready task: {e_on_ready_task}", exc_info=True)
+    finally: vc_processing_flags.pop(cid, None); print_debug(f"[{task_name_on_ready}] Processing flag CLEARED for VC ID {cid}")
+
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     if member.bot: return
     
-    # Update individual VCs
-    # 個別VCの更新
     channels_to_check_ids = set()
-    if before.channel: channels_to_check_ids.add(before.channel.id)
-    if after.channel: channels_to_check_ids.add(after.channel.id)
+    guild = None
+    if before.channel: 
+        channels_to_check_ids.add(before.channel.id)
+        guild = before.channel.guild
+    if after.channel: 
+        channels_to_check_ids.add(after.channel.id)
+        guild = after.channel.guild
+
+    if not guild:
+        guild = member.guild
+
     for original_cid in channels_to_check_ids:
         if original_cid in vc_tracking:
-            track_info = vc_tracking.get(original_cid)
-            if not track_info: print_debug(f"[on_voice_state_update] VC {original_cid} no longer in tracking. Skipping."); continue
-            guild = bot.get_guild(track_info["guild_id"])
-            if not guild: print_warning(f"[on_voice_state_update] Guild {track_info['guild_id']} for VC {original_cid} not found. Skipping."); continue
-            original_vc = guild.get_channel(original_cid)
-            status_vc_id = track_info.get("status_channel_id")
-            status_vc = guild.get_channel(status_vc_id) if status_vc_id else None
-            if isinstance(original_vc, discord.VoiceChannel) and isinstance(status_vc, discord.VoiceChannel):
-                print_debug(f"[on_voice_state_update] Relevant update for tracked VC ID: {original_cid}. Scheduling name update.")
-                asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc), name=f"UpdateTask-VoiceState-{original_cid}")
+            asyncio.create_task(update_dynamic_status_channel_name(bot.get_channel(original_cid), bot.get_channel(vc_tracking[original_cid]["status_channel_id"])), name=f"UpdateTask-VoiceState-{original_cid}")
 
-    # NEW: Update summary VC for the guild
-    # NEW: ギルドのサマリーVCを更新
-    guild = member.guild
     if guild and guild.id in summary_vc_tracking:
-        print_debug(f"[on_voice_state_update] Relevant update for summary VC in Guild: {guild.name}. Scheduling name update.")
         asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-VoiceState-{guild.id}")
 
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
-    # Update summary VC if it exists for this guild
-    # このギルドにサマリーVCが存在すれば更新
     guild = channel.guild
     if guild.id in summary_vc_tracking:
-        print_debug(f"[on_guild_channel_create] A channel was created in a guild with a summary VC. Scheduling update for {guild.name}.")
         asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-ChannelCreate-{guild.id}")
 
     if not isinstance(channel, discord.VoiceChannel): return
-    if channel.category and STATUS_CATEGORY_NAME.lower() in channel.category.name.lower(): print_debug(f"[on_guild_channel_create] New VC {channel.name} is a status channel. Ignoring."); return
-    if channel.id in vc_tracking or any(info.get("status_channel_id") == channel.id for info in vc_tracking.values()): print_debug(f"[on_guild_channel_create] New VC {channel.name} already known. Ignoring."); return
+    if channel.category and STATUS_CATEGORY_NAME.lower() in channel.category.name.lower(): return
+    if channel.id in vc_tracking or any(info.get("status_channel_id") == channel.id for info in vc_tracking.values()): return
     
     print_info(f"[on_guild_channel_create] New VC 「{channel.name}」 (ID: {channel.id}) 作成。自動追跡試行。")
     asyncio.create_task(register_new_vc_for_tracking(channel), name=f"RegisterTask-ChannelCreate-{channel.id}")
 
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    # Update summary VC if it exists for this guild
-    # このギルドにサマリーVCが存在すれば更新
     guild = channel.guild
-    if guild.id in summary_vc_tracking and not (channel.category and STATUS_CATEGORY_NAME.lower() in channel.category.name.lower()):
-        print_debug(f"[on_guild_channel_delete] A non-status channel was deleted in a guild with a summary VC. Scheduling update for {guild.name}.")
+    if guild.id in summary_vc_tracking:
         asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-ChannelDelete-{guild.id}")
 
     if not isinstance(channel, discord.VoiceChannel): return
-    original_channel_id_to_process = None; is_status_vc_deleted = False
-    guild_where_deleted = channel.guild
-    if channel.id in vc_tracking: original_channel_id_to_process = channel.id; print_info(f"[on_guild_channel_delete] Tracked original VC {channel.name} deleted.")
+    original_channel_id_to_process = None
+    is_status_vc_deleted = False
+    if channel.id in vc_tracking: 
+        original_channel_id_to_process = channel.id
     else:
         for ocid, info in list(vc_tracking.items()):
-            if info.get("status_channel_id") == channel.id and info.get("guild_id") == guild_where_deleted.id:
-                original_channel_id_to_process = ocid; is_status_vc_deleted = True; print_info(f"[on_guild_channel_delete] Status VC {channel.name} for original ID {ocid} deleted."); break
+            if info.get("status_channel_id") == channel.id and info.get("guild_id") == guild.id:
+                original_channel_id_to_process = ocid
+                is_status_vc_deleted = True
+                break
+    
     if original_channel_id_to_process:
-        print_info(f"[on_guild_channel_delete] Processing deletion for original VC ID: {original_channel_id_to_process}")
-        async def handle_deletion_logic_wrapper(ocid, deleted_is_status, g_obj):
-            task_name_del = asyncio.current_task().get_name() if asyncio.current_task() else "DelWrapTask"
-            if vc_processing_flags.get(ocid): print_debug(f"[{task_name_del}] VC ID {ocid} は他で処理中のため削除処理スキップ。"); return
-            vc_processing_flags[ocid] = True; print_debug(f"[{task_name_del}] Processing flag SET for VC ID {ocid}")
-            try:
-                if deleted_is_status:
-                    original_vc_obj = g_obj.get_channel(ocid) if g_obj else None
-                    if original_vc_obj and isinstance(original_vc_obj, discord.VoiceChannel):
-                        print_info(f"[{task_name_del}] Original VC {original_vc_obj.name} still exists. Recreating status VC.")
-                        await unregister_vc_tracking_internal(ocid, g_obj, is_internal_call=True)
-                        new_status_vc = await _create_status_vc_for_original(original_vc_obj)
-                        if new_status_vc:
-                            vc_tracking[ocid] = {"guild_id": original_vc_obj.guild.id, "status_channel_id": new_status_vc.id, "original_channel_name": original_vc_obj.name}
-                            await save_tracked_original_to_db(ocid, original_vc_obj.guild.id, new_status_vc.id, original_vc_obj.name)
-                            asyncio.create_task(update_dynamic_status_channel_name(original_vc_obj, new_status_vc), name=f"UpdateTask-PostDeleteRecreate-{ocid}")
-                            print_info(f"[{task_name_del}] Status VC for {original_vc_obj.name} recreated.")
-                        else: print_error(f"[{task_name_del}] Failed to recreate status VC for {original_vc_obj.name}.")
-                    else: print_info(f"[{task_name_del}] Original VC {ocid} not found after status VC deletion. Unregistering."); await unregister_vc_tracking_internal(ocid, g_obj, is_internal_call=True)
-                else: await unregister_vc_tracking_internal(ocid, g_obj, is_internal_call=True)
-            except Exception as e: print_error(f"[{task_name_del}] Error in deletion logic for {ocid}: {e}", exc_info=True)
-            finally: vc_processing_flags.pop(ocid, None); print_debug(f"[{task_name_del}] Processing flag CLEARED for VC ID {ocid}")
-        asyncio.create_task(handle_deletion_logic_wrapper(original_channel_id_to_process, is_status_vc_deleted, guild_where_deleted), name=f"DeleteTask-{original_channel_id_to_process}")
+        asyncio.create_task(handle_deletion_logic_wrapper(original_channel_id_to_process, is_status_vc_deleted, guild), name=f"DeleteTask-{original_channel_id_to_process}")
+
+async def handle_deletion_logic_wrapper(ocid, deleted_is_status, g_obj):
+    task_name_del = asyncio.current_task().get_name() if asyncio.current_task() else f"DelWrapTask-{ocid}"
+    if vc_processing_flags.get(ocid): print_debug(f"[{task_name_del}] VC ID {ocid} は他で処理中のため削除処理スキップ。"); return
+    vc_processing_flags[ocid] = True; print_debug(f"[{task_name_del}] Processing flag SET for VC ID {ocid}")
+    try:
+        if deleted_is_status:
+            original_vc_obj = g_obj.get_channel(ocid) if g_obj else None
+            if original_vc_obj and isinstance(original_vc_obj, discord.VoiceChannel):
+                await unregister_vc_tracking_internal(ocid, g_obj, is_internal_call=True)
+                await register_new_vc_for_tracking(original_vc_obj)
+            else:
+                await unregister_vc_tracking_internal(ocid, g_obj, is_internal_call=True)
+        else:
+            await unregister_vc_tracking_internal(ocid, g_obj, is_internal_call=True)
+    except Exception as e: print_error(f"[{task_name_del}] Error in deletion logic for {ocid}: {e}", exc_info=True)
+    finally: vc_processing_flags.pop(ocid, None); print_debug(f"[{task_name_del}] Processing flag CLEARED for VC ID {ocid}")
+
 
 @tasks.loop(minutes=3)
 async def periodic_status_update():
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "PeriodicTaskLoop"
     print_debug(f"[{task_name}] 定期ステータス更新タスク実行中... 現在追跡中: {len(vc_tracking)}件, サマリー: {len(summary_vc_tracking)}件")
     
-    # Individual VC updates
-    # 個別VCの更新
-    if vc_tracking:
-        for original_cid in list(vc_tracking.keys()):
-            # ... (個別VCの定期更新ロジックの残りは変更なし)
-            print_debug(f"[{task_name}|periodic_update] Processing VC ID: {original_cid}")
-            track_info = vc_tracking.get(original_cid);
-            if not track_info: print_warning(f"[{task_name}|periodic_update] VC {original_cid} no longer in tracking. Skipping."); continue
-            guild = bot.get_guild(track_info["guild_id"])
-            if not guild: print_warning(f"[{task_name}|periodic_update] Guild {track_info['guild_id']} for VC {original_cid} not found. Scheduling unreg."); asyncio.create_task(unregister_vc_tracking(original_cid, None), name=f"UnregTask-Periodic-NoGuild-{original_cid}"); continue
-            original_vc = guild.get_channel(original_cid)
-            status_vc = guild.get_channel(track_info.get("status_channel_id")) if track_info.get("status_channel_id") else None
+    for original_cid in list(vc_tracking.keys()):
+        track_info = vc_tracking.get(original_cid)
+        if not track_info: continue
+        guild = bot.get_guild(track_info["guild_id"])
+        if not guild:
+            asyncio.create_task(unregister_vc_tracking(original_cid, None), name=f"UnregTask-Periodic-NoGuild-{original_cid}")
+            continue
+        original_vc = guild.get_channel(original_cid)
+        status_vc = guild.get_channel(track_info.get("status_channel_id")) if track_info.get("status_channel_id") else None
+        if isinstance(original_vc, discord.VoiceChannel) and isinstance(status_vc, discord.VoiceChannel):
+             asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc), name=f"UpdateTask-Periodic-{original_cid}")
+        else:
+            asyncio.create_task(unregister_vc_tracking(original_cid, guild), name=f"UnregTask-Periodic-GenericInvalid-{original_cid}")
 
-            if isinstance(original_vc, discord.VoiceChannel) and isinstance(status_vc, discord.VoiceChannel):
-                if status_vc.category is None or STATUS_CATEGORY_NAME.lower() not in status_vc.category.name.lower():
-                    print_warning(f"[{task_name}|periodic_update] Status VC {status_vc.name} for {original_vc.name} in wrong category. Scheduling fix.")
-                    async def fix_cat_task(ovc, g):
-                        fix_task_name_inner = asyncio.current_task().get_name() if asyncio.current_task() else "FixCatInnerTask"
-                        if vc_processing_flags.get(ovc.id): print_debug(f"[{fix_task_name_inner}] VC {ovc.id} already processing, category fix skipped."); return
-                        vc_processing_flags[ovc.id] = True; print_debug(f"[{fix_task_name_inner}] Flag SET for category fix {ovc.id}")
-                        try: await unregister_vc_tracking_internal(ovc.id, g, is_internal_call=True); await register_new_vc_for_tracking(ovc)
-                        except Exception as e: print_error(f"[{fix_task_name_inner}] Error fixing category for {ovc.id}: {e}", exc_info=True)
-                        finally: vc_processing_flags.pop(ovc.id, None); print_debug(f"[{fix_task_name_inner}] Flag CLEARED for category fix {ovc.id}")
-                    asyncio.create_task(fix_cat_task(original_vc, guild), name=f"FixCategoryTask-{original_cid}"); continue
-                asyncio.create_task(update_dynamic_status_channel_name(original_vc, status_vc), name=f"UpdateTask-Periodic-{original_cid}")
-            elif not isinstance(original_vc, discord.VoiceChannel) and original_cid in vc_tracking:
-                print_warning(f"[{task_name}|periodic_update] Original VC {original_cid} invalid. Scheduling unreg.")
-                asyncio.create_task(unregister_vc_tracking(original_cid, guild), name=f"UnregTask-Periodic-InvalidOrig-{original_cid}")
-            elif isinstance(original_vc, discord.VoiceChannel) and not isinstance(status_vc, discord.VoiceChannel):
-                print_warning(f"[{task_name}|periodic_update] Status VC for {original_vc.name} missing. Scheduling recreate.")
-                async def recreate_status_task(ovc, g):
-                    recreate_task_name_inner = asyncio.current_task().get_name() if asyncio.current_task() else "RecreateStatusInnerTask"
-                    if vc_processing_flags.get(ovc.id): print_debug(f"[{recreate_task_name_inner}] VC {ovc.id} already processing, status recreate skipped."); return
-                    vc_processing_flags[ovc.id] = True; print_debug(f"[{recreate_task_name_inner}] Flag SET for status recreate {ovc.id}")
-                    try: await unregister_vc_tracking_internal(ovc.id, g, is_internal_call=True); await register_new_vc_for_tracking(ovc)
-                    except Exception as e: print_error(f"[{recreate_task_name_inner}] Error recreating status VC for {ovc.id}: {e}", exc_info=True)
-                    finally: vc_processing_flags.pop(ovc.id, None); print_debug(f"[{recreate_task_name_inner}] Flag CLEARED for status recreate {ovc.id}")
-                asyncio.create_task(recreate_status_task(original_vc, guild), name=f"RecreateStatusTask-{original_cid}")
-            elif original_cid in vc_tracking:
-                print_warning(f"[{task_name}|periodic_update] Generic invalid state for VC {original_cid}. Scheduling unreg.")
-                asyncio.create_task(unregister_vc_tracking(original_cid, guild), name=f"UnregTask-Periodic-GenericInvalid-{original_cid}")
-
-    # NEW: Summary VC updates
-    # NEW: サマリーVCの更新
-    if summary_vc_tracking:
-        for guild_id in list(summary_vc_tracking.keys()):
-            guild = bot.get_guild(guild_id)
-            if guild:
-                print_debug(f"[{task_name}|periodic_update] Scheduling periodic summary update for Guild: {guild.name}")
-                asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-Periodic-{guild_id}")
-            else:
-                print_warning(f"[{task_name}|periodic_update] Guild {guild_id} with summary VC not found. Unregistering.")
-                summary_vc_tracking.pop(guild_id, None)
-                await remove_summary_vc_from_db(guild_id)
+    for guild_id in list(summary_vc_tracking.keys()):
+        guild = bot.get_guild(guild_id)
+        if guild:
+            asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-Periodic-{guild_id}")
+        else:
+            summary_vc_tracking.pop(guild_id, None)
+            asyncio.create_task(remove_summary_vc_from_db(guild_id))
 
 @tasks.loop(minutes=1)
 async def periodic_keep_alive_ping():
-    """1分ごとにログを出力してRenderのスリープを防ぐニャ。"""
     task_name = asyncio.current_task().get_name() if asyncio.current_task() else "KeepAlivePingTask"
     print_info(f"[{task_name}] Periodic keep-alive log: POST HOST")
 
 # --- Bot Commands ---
-# --- Botコマンド ---
 @bot.command(name='nah', help="指定した数のメッセージを削除するニャ。 例: !!nah 5")
 @commands.has_permissions(manage_messages=True)
 @commands.bot_has_permissions(manage_messages=True)
@@ -789,16 +753,15 @@ async def nah_command(ctx, num: int):
         deleted_messages = await ctx.channel.purge(limit=num + 1)
         response_msg = await ctx.send(f"{len(deleted_messages) -1}件のメッセージを削除したニャ🐈")
         await asyncio.sleep(5); await response_msg.delete()
-    except discord.Forbidden: await ctx.send("メッセージを削除する権限がないニャ�")
+    except discord.Forbidden: await ctx.send("メッセージを削除する権限がないニャ😿")
     except discord.HTTPException as e: print_error(f"nahコマンドHTTPエラー: {e}", exc_info=True); await ctx.send(f"メッセージ削除中エラーニャ😿: {e.text}")
     except Exception as e: print_error(f"nahコマンドエラー: {e}", exc_info=True); await ctx.send(f"エラー発生ニャ😿: {e}")
 
 @nah_command.error
 async def nah_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions): await ctx.send("このコマンドの権限がニャい… (メッセージ管理権限が必要だニャ)")
-    elif isinstance(error, commands.BotMissingPermissions):
-        missing_perms = [perm.replace('_', ' ').replace('guild', 'server').title() for perm in error.missing_permissions]
-        await ctx.send(f"ボットに次の権限がないため、コマンドを実行できませんニャ😿: `{', '.join(missing_perms)}`")
+    if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
+        print_error(f"nah_commandで権限エラー: {error}")
+        return
     elif isinstance(error, commands.BadArgument): await ctx.send("数の指定がおかしいニャ。例: `!!nah 5`")
     else: print_error(f"nah_command 未処理エラー: {error}", exc_info=True); await ctx.send("コマンド実行中予期せぬエラー発生ニャ。")
 
@@ -807,7 +770,7 @@ async def nah_command_error(ctx, error):
 @commands.bot_has_permissions(manage_channels=True)
 async def nah_vc_command(ctx, *, channel_id_or_name: str):
     guild = ctx.guild
-    if not guild: await ctx.send("このコマンドはサーバー内でのみ使用可能ですニャ🐈"); return
+    if not guild: return
     target_vc = None
     try: vc_id = int(channel_id_or_name); target_vc = guild.get_channel(vc_id)
     except ValueError:
@@ -815,38 +778,30 @@ async def nah_vc_command(ctx, *, channel_id_or_name: str):
             if vc_iter.name.lower() == channel_id_or_name.lower(): target_vc = vc_iter; break
         if not target_vc:
             for vc_iter in guild.voice_channels:
-                if channel_id_or_name.lower() in vc_iter.name.lower(): target_vc = vc_iter; print_info(f"VC名「{channel_id_or_name}」の部分一致で「{vc_iter.name}」を使用。"); break
+                if channel_id_or_name.lower() in vc_iter.name.lower(): target_vc = vc_iter; break
     if not target_vc or not isinstance(target_vc, discord.VoiceChannel): await ctx.send(f"「{channel_id_or_name}」はボイスチャンネルとして見つからなかったニャ😿"); return
     if target_vc.category and STATUS_CATEGORY_NAME.lower() in target_vc.category.name.lower(): await ctx.send(f"VC「{target_vc.name}」はSTATUSチャンネルのようだニャ。元のVCを指定してニャ。"); return
     
     await ctx.send(f"VC「{target_vc.name}」の追跡設定/解除処理を開始したニャ。完了まで少し待ってニャ。")
     if target_vc.id in vc_tracking:
-        print_info(f"コマンド: VC「{target_vc.name}」の追跡解除を試みます。")
         asyncio.create_task(unregister_vc_tracking(target_vc.id, guild, send_feedback_to_ctx=ctx), name=f"UnregisterTask-Command-{target_vc.id}")
     else:
-        print_info(f"コマンド: VC「{target_vc.name}」の新規追跡を試みます。")
         asyncio.create_task(register_new_vc_for_tracking(target_vc, send_feedback_to_ctx=ctx), name=f"RegisterTask-Command-{target_vc.id}")
 
 @nah_vc_command.error
 async def nah_vc_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions): await ctx.send("このコマンドの権限がニャい… (チャンネル管理権限が必要だニャ)")
-    elif isinstance(error, commands.BotMissingPermissions):
-        missing_perms = [perm.replace('_', ' ').replace('guild', 'server').title() for perm in error.missing_permissions]
-        await ctx.send(f"ボットに次の権限がないため、コマンドを実行できませんニャ😿: `{', '.join(missing_perms)}`\nサーバーの管理者に連絡して、ボットのロールにこの権限を与えてもらってくださいニャ。")
+    if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
+        print_error(f"nah_vc_commandで権限エラー: {error}")
+        return
     elif isinstance(error, commands.MissingRequiredArgument): await ctx.send("どのボイスチャンネルか指定してニャ！ 例: `!!nah_vc General`")
     else: print_error(f"nah_vc_command 未処理エラー: {error}", exc_info=True); await ctx.send("コマンド実行中予期せぬエラー発生ニャ。")
 
-# --- NEW: nah_sum command (FIXED) ---
-# --- NEW: nah_sum コマンド (修正済み) ---
 @bot.command(name='nah_sum', help="サーバー全体のVC接続人数を集計する鍵付きVCを作成/削除するニャ。")
 @commands.has_permissions(manage_channels=True)
-@commands.bot_has_permissions(manage_channels=True) # スレッド関連の不要な権限チェックを削除
+@commands.bot_has_permissions(manage_channels=True)
 async def nah_sum_command(ctx):
     guild = ctx.guild
-    if not guild:
-        await ctx.send("このコマンドはサーバー内でのみ使用可能ですニャ🐈")
-        return
-
+    if not guild: return
     guild_id = guild.id
     task_name = f"Command-NahSum-{guild_id}"
 
@@ -856,80 +811,48 @@ async def nah_sum_command(ctx):
 
     summary_vc_processing_flags[guild_id] = True
     print_debug(f"[{task_name}] Processing flag SET for Guild ID: {guild_id}")
-    
     try:
         existing_summary_vc_id = summary_vc_tracking.get(guild_id)
         if existing_summary_vc_id:
-            # --- Deletion Logic ---
-            # --- 削除ロジック ---
             await ctx.send("集計用チャンネルを削除しますニャ...")
             summary_vc = guild.get_channel(existing_summary_vc_id)
             if summary_vc and isinstance(summary_vc, discord.VoiceChannel):
                 try:
                     await asyncio.wait_for(summary_vc.delete(reason="nah_sumコマンドによる削除"), timeout=API_CALL_TIMEOUT)
                     await ctx.send("サーバー全体の人数集計用チャンネルを削除したニャ。")
-                    print_info(f"[{task_name}] サマリーVC {summary_vc.name} (ID: {summary_vc.id}) をコマンドで削除しました。")
-                except asyncio.TimeoutError:
-                    print_error(f"[{task_name}] サマリーVC {summary_vc.id} の削除がタイムアウトしました。")
-                    await ctx.send("チャンネルの削除中にタイムアウトしましたニャ😿")
-                except discord.Forbidden:
-                    print_error(f"[{task_name}] サマリーVC {summary_vc.id} の削除権限がありません。")
-                    await ctx.send("チャンネルを削除する権限がありませんニャ😿")
                 except Exception as e:
-                    print_error(f"[{task_name}] サマリーVC {summary_vc.id} の削除中にエラー: {e}", exc_info=True)
+                    print_error(f"サマリーVC削除エラー: {e}", exc_info=True)
                     await ctx.send("チャンネルの削除中にエラーが発生しましたニャ😿")
-            else:
-                await ctx.send("集計用チャンネルは既に見つからないようですニャ。")
-
             summary_vc_tracking.pop(guild_id, None)
             await remove_summary_vc_from_db(guild_id)
         else:
-            # --- Creation Logic ---
-            # --- 作成ロジック ---
             await ctx.send("集計用チャンネルを作成しますニャ...")
             status_category = await get_or_create_status_category(guild)
             if not status_category:
                 await ctx.send("STATUSカテゴリの作成/取得に失敗しましたニャ😿 チャンネル管理権限を確認してください。")
                 return
-
             initial_name = "Study/Work：集計中... users"
             overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False, speak=False)}
             try:
-                new_summary_vc = await asyncio.wait_for(
-                    guild.create_voice_channel(name=initial_name, category=status_category, overwrites=overwrites, reason="nah_sumコマンドによる作成"),
-                    timeout=API_CALL_TIMEOUT
-                )
+                new_summary_vc = await guild.create_voice_channel(name=initial_name, category=status_category, overwrites=overwrites, reason="nah_sumコマンドによる作成")
                 summary_vc_tracking[guild_id] = new_summary_vc.id
                 await save_summary_vc_to_db(guild_id, new_summary_vc.id)
-                print_info(f"[{task_name}] 新しいサマリーVC {new_summary_vc.name} (ID: {new_summary_vc.id}) を作成しました。")
-                
-                # Trigger initial update
-                # 初回更新をトリガー
                 asyncio.create_task(update_summary_vc_name(guild), name=f"UpdateSummaryTask-PostCreate-{guild_id}")
-                await ctx.send(f"サーバー全体の人数集計用チャンネル「{new_summary_vc.name}」を作成したニャ！")
-            except asyncio.TimeoutError:
-                print_error(f"[{task_name}] サマリーVCの作成がタイムアウトしました。")
-                await ctx.send("チャンネルの作成中にタイムアウトしましたニャ😿")
-            except discord.Forbidden:
-                print_error(f"[{task_name}] サマリーVCの作成権限がありません。")
-                await ctx.send("チャンネルを作成する権限がありませんニャ😿")
+                await ctx.send(f"サーバー全体の人数集計用チャンネルを作成したニャ！")
             except Exception as e:
-                print_error(f"[{task_name}] サマリーVCの作成中にエラー: {e}", exc_info=True)
+                print_error(f"サマリーVC作成エラー: {e}", exc_info=True)
                 await ctx.send("チャンネルの作成中にエラーが発生しましたニャ😿")
-                summary_vc_tracking.pop(guild_id, None) # Clean up on failure
+                summary_vc_tracking.pop(guild_id, None)
                 await remove_summary_vc_from_db(guild_id)
-                
     finally:
         summary_vc_processing_flags.pop(guild_id, None)
         print_debug(f"[{task_name}] Processing flag CLEARED for Guild ID: {guild_id}")
 
 @nah_sum_command.error
 async def nah_sum_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("このコマンドの権限がニャい… (チャンネル管理権限が必要だニャ)")
-    elif isinstance(error, commands.BotMissingPermissions):
-        missing_perms = [perm.replace('_', ' ').replace('guild', 'server').title() for perm in error.missing_permissions]
-        await ctx.send(f"ボットに次の権限がないため、コマンドを実行できませんニャ😿: `{', '.join(missing_perms)}`\nサーバーの管理者に連絡して、ボットのロールにこの権限を与えてもらってくださいニャ。")
+    if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
+        print_error(f"nah_sum_commandで権限エラー: {error}")
+        return
     else:
         print_error(f"nah_sum_command 未処理エラー: {error}", exc_info=True)
         await ctx.send("コマンド実行中に予期せぬエラーが発生しましたニャ。")
@@ -938,7 +861,6 @@ async def nah_sum_command_error(ctx, error):
 async def nah_help_prefix(ctx: commands.Context): await ctx.send(HELP_TEXT_CONTENT)
 
 # --- Main Bot Execution ---
-# --- Botのメイン実行部分 ---
 async def start_bot_main():
     if DISCORD_TOKEN is None: print_error("DISCORD_TOKEN未設定。Bot起動不可。"); return
     if os.getenv("RENDER"): keep_alive()
@@ -955,7 +877,6 @@ async def start_bot_main():
         print_info("Botシャットダウン完了。")
 
 # --- Entry Point ---
-# --- エントリーポイント ---
 if __name__ == "__main__":
     try: asyncio.run(start_bot_main())
     except KeyboardInterrupt: print_info("ユーザーによりBot停止 (KeyboardInterrupt)。")
