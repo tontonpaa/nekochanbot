@@ -796,7 +796,9 @@ async def nah_command(ctx, num: int):
 @nah_command.error
 async def nah_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions): await ctx.send("このコマンドの権限がニャい… (メッセージ管理権限が必要だニャ)")
-    elif isinstance(error, commands.BotMissingPermissions): await ctx.send("ボットにメッセージ削除権限がないニャ😿")
+    elif isinstance(error, commands.BotMissingPermissions):
+        missing_perms = [perm.replace('_', ' ').replace('guild', 'server').title() for perm in error.missing_permissions]
+        await ctx.send(f"ボットに次の権限がないため、コマンドを実行できませんニャ😿: `{', '.join(missing_perms)}`")
     elif isinstance(error, commands.BadArgument): await ctx.send("数の指定がおかしいニャ。例: `!!nah 5`")
     else: print_error(f"nah_command 未処理エラー: {error}", exc_info=True); await ctx.send("コマンド実行中予期せぬエラー発生ニャ。")
 
@@ -828,7 +830,9 @@ async def nah_vc_command(ctx, *, channel_id_or_name: str):
 @nah_vc_command.error
 async def nah_vc_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions): await ctx.send("このコマンドの権限がニャい… (チャンネル管理権限が必要だニャ)")
-    elif isinstance(error, commands.BotMissingPermissions): await ctx.send("ボットにチャンネル管理権限がないニャ😿")
+    elif isinstance(error, commands.BotMissingPermissions):
+        missing_perms = [perm.replace('_', ' ').replace('guild', 'server').title() for perm in error.missing_permissions]
+        await ctx.send(f"ボットに次の権限がないため、コマンドを実行できませんニャ😿: `{', '.join(missing_perms)}`\nサーバーの管理者に連絡して、ボットのロールにこの権限を与えてもらってくださいニャ。")
     elif isinstance(error, commands.MissingRequiredArgument): await ctx.send("どのボイスチャンネルか指定してニャ！ 例: `!!nah_vc General`")
     else: print_error(f"nah_vc_command 未処理エラー: {error}", exc_info=True); await ctx.send("コマンド実行中予期せぬエラー発生ニャ。")
 
@@ -924,7 +928,8 @@ async def nah_sum_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("このコマンドの権限がニャい… (チャンネル管理権限が必要だニャ)")
     elif isinstance(error, commands.BotMissingPermissions):
-        await ctx.send("ボットにチャンネル管理権限がないニャ😿")
+        missing_perms = [perm.replace('_', ' ').replace('guild', 'server').title() for perm in error.missing_permissions]
+        await ctx.send(f"ボットに次の権限がないため、コマンドを実行できませんニャ😿: `{', '.join(missing_perms)}`\nサーバーの管理者に連絡して、ボットのロールにこの権限を与えてもらってくださいニャ。")
     else:
         print_error(f"nah_sum_command 未処理エラー: {error}", exc_info=True)
         await ctx.send("コマンド実行中に予期せぬエラーが発生しましたニャ。")
