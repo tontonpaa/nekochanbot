@@ -97,7 +97,7 @@ def keep_alive():
 
 # --- Bot Intents Configuration ---
 # --- BotのIntents設定 ---
-intents = discord.Intents.all(); intents.guilds = True; intents.voice_states = True; intents.message_content = True
+intents = discord.Intents.default(); intents.guilds = True; intents.voice_states = True; intents.message_content = True
 
 # --- Firestore Client and Constants ---
 # --- Firestoreクライアントと定数 ---
@@ -789,7 +789,7 @@ async def nah_command(ctx, num: int):
         deleted_messages = await ctx.channel.purge(limit=num + 1)
         response_msg = await ctx.send(f"{len(deleted_messages) -1}件のメッセージを削除したニャ🐈")
         await asyncio.sleep(5); await response_msg.delete()
-    except discord.Forbidden: await ctx.send("メッセージを削除する権限がないニャ😿")
+    except discord.Forbidden: await ctx.send("メッセージを削除する権限がないニャ�")
     except discord.HTTPException as e: print_error(f"nahコマンドHTTPエラー: {e}", exc_info=True); await ctx.send(f"メッセージ削除中エラーニャ😿: {e.text}")
     except Exception as e: print_error(f"nahコマンドエラー: {e}", exc_info=True); await ctx.send(f"エラー発生ニャ😿: {e}")
 
@@ -836,11 +836,11 @@ async def nah_vc_command_error(ctx, error):
     elif isinstance(error, commands.MissingRequiredArgument): await ctx.send("どのボイスチャンネルか指定してニャ！ 例: `!!nah_vc General`")
     else: print_error(f"nah_vc_command 未処理エラー: {error}", exc_info=True); await ctx.send("コマンド実行中予期せぬエラー発生ニャ。")
 
-# --- NEW: nah_sum command ---
-# --- NEW: nah_sum コマンド ---
+# --- NEW: nah_sum command (FIXED) ---
+# --- NEW: nah_sum コマンド (修正済み) ---
 @bot.command(name='nah_sum', help="サーバー全体のVC接続人数を集計する鍵付きVCを作成/削除するニャ。")
 @commands.has_permissions(manage_channels=True)
-@commands.bot_has_permissions(manage_channels=True, create_public_threads=False, create_private_threads=False, manage_threads=False) # 正確な権限を指定
+@commands.bot_has_permissions(manage_channels=True) # スレッド関連の不要な権限チェックを削除
 async def nah_sum_command(ctx):
     guild = ctx.guild
     if not guild:
