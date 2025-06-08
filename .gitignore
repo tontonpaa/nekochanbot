@@ -1,3 +1,4 @@
 .env
 etc/secrets/vc_data.json
 vc_data.json
+.vscode/settings.json
